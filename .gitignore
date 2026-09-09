@@ -1,0 +1,18 @@
+# 비밀·개인정보
+service_account.json
+.streamlit/secrets.toml
+config.json
+chrome-profile/
+
+# 로컬 데이터 (전환 시트에 신청자 정보가 들어있어 절대 커밋 금지)
+data/
+samples/
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.pytest_cache/
+google-profile/
+kakao_state.json
+collect.log
+scraper.log

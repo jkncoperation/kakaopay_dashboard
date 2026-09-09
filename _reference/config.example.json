@@ -1,0 +1,10 @@
+{
+  "ad_account_id": "10000246",
+  "campaign_ids": ["10000919"],
+  "page_size": 100,
+  "service_account_file": "service_account.json",
+  "spreadsheet_id": "1qcffn2CLiEK4U13vr_dR95-kZq99xI9vkPY_hAJM6m4",
+  "worksheet": "KakaopayRAW",
+  "profile_dir": "chrome-profile",
+  "headless": true
+}

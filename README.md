@@ -1,0 +1,215 @@
+# 카카오페이 광고 × 전환(DB) 통합 대시보드
+
+내 PC에서 도는 로컬 Streamlit 앱입니다. 광고센터 소진과 랜딩 DB를 **소재번호로 매칭**해
+소재별 소진 / DB / DB단가 / 상태를 한 화면에서 봅니다.
+
+```
+광고 데이터 ─ ① 파일 업로드  ┐
+            ② 실시간 수집  ├─▶ data/ad_daily.sqlite ─┐
+            ③ 캡처 OCR    ┘   (날짜+소재 키, 덮어쓰기) │
+                                                      ├─▶ 소재별 집계 · 차트 · 복사용 리포트
+전환(DB)   ─ 공개 CSV / 파일 업로드 / 서비스 계정 ─────┘
+```
+
+## 처음 한 번
+
+```
+cd kakaopay_dashboard
+..\venv\Scripts\activate            # 모노레포 공용 가상환경
+pip install -r requirements.txt
+playwright install chromium         # ② 실시간 수집을 쓸 때만 필요
+```
+
+## 실행
+
+```
+streamlit run app.py
+```
+브라우저가 열리지 않으면 http://localhost:8501 로 접속합니다. 끄려면 터미널에서 `Ctrl + C`.
+
+## 데이터 넣는 세 가지 방법
+
+앱 상단 **데이터 넣기** 패널에서 고릅니다. 어느 경로로 넣든 같은 형태로 저장돼 섞어 써도 됩니다.
+
+| 방법 | 언제 | 하는 일 |
+|---|---|---|
+| **① 파일 업로드** (권장) | 평소 | 광고센터 소재 화면 우측 상단 **다운로드** 로 받은 xlsx/csv 를 올립니다. 여러 날짜를 한꺼번에 올려도 됩니다. 날짜는 파일명(`_20260909_20260909`)에서 자동으로 읽습니다. |
+| **② 실시간 수집** | 오늘 수치를 지금 봐야 할 때 | 로그인된 크롬 프로필로 광고센터를 직접 읽습니다. 최초 1회 `python collect_live.py --login` 으로 카카오 로그인이 필요합니다. |
+| **③ 캡처 OCR** | 위 둘 다 막혔을 때 | 화면 캡처에서 소재명·소진을 뽑습니다. **숫자를 자주 틀리므로 저장 전에 표에서 직접 확인·수정**하게 돼 있습니다. `pip install easyocr` 가 필요합니다. |
+
+### 전환(DB) 시트 - 서비스 계정 (기본)
+
+시트가 비공개라 공개 CSV 로는 못 읽습니다(HTTP 401). **서비스 계정**을 씁니다 -
+사람 로그인 세션과 달리 만료가 없어서 스케줄러로 돌리는 무인 자동화에 안정적입니다.
+
+**필요한 것은 두 가지뿐입니다: Sheets API 켜기 + 시트를 서비스 계정에 뷰어로 공유.**
+(Drive API 는 필요 없습니다. `open_by_key` 는 `sheets.googleapis.com` 만 씁니다.)
+
+#### 설정 순서
+
+1. https://console.cloud.google.com 접속 (아무 구글 계정이나 됩니다. 시트 권한과 무관)
+2. 상단 프로젝트 선택 > **새 프로젝트** > 이름 `kakaopay-dashboard` > 만들기 > 그 프로젝트로 이동
+3. **API 및 서비스 > 라이브러리** > `Google Sheets API` 검색 > **사용** 클릭
+4. **API 및 서비스 > 사용자 인증 정보** > **+ 사용자 인증 정보 만들기 > 서비스 계정**
+   - 서비스 계정 이름 `sheet-bot` > 만들고 계속 > 역할 건너뛰기 > 완료
+5. 만들어진 서비스 계정 클릭 > **키** 탭 > **키 추가 > 새 키 만들기 > JSON** > 파일 다운로드
+6. 그 파일을 `service_account.json` 으로 이름 바꿔 **이 폴더에 넣기**
+7. 서비스 계정 주소 확인:
+   ```
+   python collect_db.py --check
+   ```
+   `sheet-bot@kakaopay-dashboard.iam.gserviceaccount.com` 같은 주소가 나옵니다.
+8. [DB RAW 시트](https://docs.google.com/spreadsheets/d/1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4)
+   **공유** 버튼 > 그 주소를 **뷰어**로 추가 > 완료
+9. 다시 점검 - 세 줄 모두 OK 면 끝입니다:
+   ```
+   python collect_db.py --check
+   ```
+
+#### 사용
+
+```
+python collect_db.py           # 시트 읽어 저장
+python collect_db.py --dry     # 저장 없이 건수만
+python collect_db.py --check   # 막혔을 때: 어디가 문제인지 짚어줌
+```
+
+앱에서는 **데이터 넣기 > 전환(DB) 시트 > 시트 불러오기** 버튼이 같은 일을 합니다.
+
+`--check` 는 실패 원인을 구글 오류 코드가 아니라 할 일로 바꿔 알려줍니다 -
+Sheets API 안 켬 / 시트 공유 안 됨 / 시트 ID 틀림 을 구분합니다.
+
+#### 백업 경로
+
+서비스 계정이 준비되기 전이나 일시적으로 막혔을 때 씁니다.
+
+```
+python collect_db.py --browser          # 전용 프로필 (최초 1회 --login)
+python collect_db.py --browser --cdp    # 켜 둔 내 Chrome 에 붙기
+python collect_db.py --login            # 전용 프로필에 구글 로그인
+```
+앱의 **다른 방법 (백업용)** 에서 시트 파일 업로드도 됩니다.
+
+## 브라우저 확보 방식 두 가지
+
+수집기(광고·시트 공통)는 `core/browser.py` 로 브라우저를 얻습니다.
+
+| 방식 | 로그인 | 장단점 |
+|---|---|---|
+| **전용 프로필** (기본) | 카카오·구글 각 1회 | 이 업무 계정만 든 프로필이라 안전. 세션이 풀리면 재로그인 |
+| **내 Chrome 에 붙기** (`cdp`) | 필요 없음 | 지금 로그인된 세션 그대로. 대신 Chrome 을 `--remote-debugging-port=9222` 로 켜야 하고, 그 포트에 붙을 수 있는 로컬 프로그램은 그 Chrome 의 모든 세션을 쓸 수 있음 |
+
+`chrome_debug.bat` 이 두 번째 방식용입니다. **Chrome 을 완전히 종료한 뒤** 실행하세요.
+광고 수집도 이 방식을 쓰려면 `config.json` 에 `"browser_mode": "cdp"` 를 넣습니다.
+
+실제 Chrome(`channel="chrome"`)으로 띄웁니다 — 구글이 자동화용 Chromium 의 로그인을 막는 경우가 있어서입니다.
+
+시트에 신청자 정보가 들어 있어 '링크가 있는 모든 사용자에게 공개'로 바꾸는 것은 권하지 않습니다.
+
+## 자동 수집 (30분마다)
+
+작업 스케줄러에 `kakaopay 수집` 으로 등록돼 있습니다. 30분마다 `run_collect.bat` 이 돌면서
+광고(실시간) + 전환(시트) 을 함께 가져오고, 결과를 `collect.log` 에 한 줄로 남깁니다.
+
+```
+[2026-09-09 23:28:02] 성공 | 광고: 39행 저장 (소진 622,040원) | 전환: 132건 저장
+```
+
+- 지금 바로 한 번: `python collect_all.py`
+- 해제: `schtasks /delete /tn "kakaopay 수집" /f`
+- 상태 확인: `schtasks /query /tn "kakaopay 수집"`
+
+대시보드 맨 위 **지금 새로고침** 버튼도 같은 경로를 탑니다.
+
+## 팀 공유 (Streamlit Cloud 배포)
+
+카카오 로그인 때문에 **수집기는 계속 이 PC 에서** 돌아야 합니다. 그래서 수집 결과를 구글
+시트에 올려 두고, 클라우드 대시보드가 그 시트를 읽는 구조입니다.
+
+```
+내 PC (30분마다)                        Streamlit Cloud
+collect_all.py -> sqlite -> 광고 시트 ┐
+                             전환 시트 ┴-> app.py -> 팀이 링크로 접속
+```
+
+### 1단계 - 광고 데이터용 시트 만들기
+1. 구글 드라이브에서 새 스프레드시트를 만듭니다 (이름 예: `카카오페이 광고 RAW`)
+2. **공유** > 서비스 계정 주소를 **편집자** 로 추가
+   (주소 확인: `python collect_db.py --check`)
+3. 주소창의 `/d/` 와 `/edit` 사이 문자열이 시트 ID 입니다
+4. `config.json` 의 `ad_sheet_id` 에 그 ID 를 넣습니다
+5. `python collect_all.py` 를 한 번 돌리면 `KakaopayRAW` 탭이 자동으로 생기고 데이터가 올라갑니다
+
+### 2단계 - GitHub 에 올리기
+```
+git add kakaopay_dashboard
+git commit -m "kakaopay dashboard"
+git push
+```
+`.gitignore` 로 키 파일·로컬 데이터·브라우저 프로필은 전부 제외됩니다. 저장소는 **비공개**로.
+
+### 3단계 - Streamlit Cloud
+1. https://share.streamlit.io > GitHub 로 로그인 > **New app**
+2. 저장소 선택, Main file path 는 `kakaopay_dashboard/app.py`
+3. **Advanced settings > Secrets** 칸에 아래 명령의 출력을 그대로 붙여넣기
+   ```
+   python make_cloud_secrets.py "팀에게알려줄비밀번호"
+   ```
+4. Deploy > 2~3분 뒤 나오는 `https://<앱이름>.streamlit.app` 링크와 비밀번호를 팀에 공유
+
+`ad_sheet_id` 가 secrets 에 있으면 앱이 자동으로 **클라우드 모드**가 됩니다 - 로컬 sqlite 대신
+시트를 읽고, 수집 버튼은 '시트 다시 읽기' 로 바뀝니다.
+
+## 조회 모드
+
+- **당일 실시간** — 오늘 최신 소진 + 오늘 DB. 마지막 수집 시각이 함께 표시됩니다.
+  오늘 수치는 광고센터가 실시간 집계라 볼 때마다 달라집니다.
+- **일별** — 저장된 날짜 중 하나를 골라 그날 수치만
+- **기간** — 시작~종료 합산 + 일별 추이 차트
+
+## 집계 규칙
+
+- 매칭: DB `utm_content` = `kakaopay_ad{세트}-{소재}` ↔ 소재명 `{접두어}{세트}_ad{소재}`
+  (`채무조정_ad6` = 세트1, `채무조정2_ad6` = 세트2. 세트가 다르면 다른 소재)
+- **DB단가 = 소진 ÷ DB**, 0건은 `-`. 합계 단가도 총소진÷총DB (개별 단가의 평균이 아님)
+- DB 0건 미전환 소재도 표에 모두 남습니다
+- 같은 (세트, 번호) 키를 가진 소재가 둘이면(`채무조정_ad3` vs `카카오페이_ad3`) 소진이 큰 쪽에만 DB를 배정
+- 소재는 **소재명 기준**으로 묶습니다. 세트명이 바뀌어도(`채무조정 세트` → `채무조정 세트 / 07~24 / 납입금 절감`)
+  기간 조회에서 한 소재가 두 줄로 갈라지지 않습니다
+- `테스트` 가 들어간 광고그룹은 기본 제외 (사이드바에서 포함 가능)
+- 사이드바 보정: `소재명 금액` 으로 CPC 수정 전 지출 차감, `소재명 건수` 로 DB 직접 지정(시트보다 우선)
+- 상태 분류는 기존 보고서 시트와 같은 정규식. **승인은 `승인` 열**, 나머지는 `접수` 열에서 봅니다
+
+## 파일
+
+| 경로 | 역할 |
+|---|---|
+| `app.py` | 대시보드 |
+| `collect_live.py` | 광고 실시간 수집 (Playwright). `--login` / `--date` / `--start`·`--end` / `--dry` |
+| `collect_db.py` | 전환 시트 읽기 (로그인된 브라우저). `--login` / `--dry` |
+| `store.py` | 로컬 sqlite 저장소 (날짜+소재 upsert) |
+| `parsers/adcenter_file.py` | 광고센터 다운로드 파일 파서 |
+| `parsers/adcenter_ocr.py` | 캡처 이미지 OCR 초안 추출 |
+| `sources/db_sheet.py` | 전환 시트 읽기 (공개 CSV / 파일 / 서비스 계정) |
+| `core/metrics.py` | 매칭·계산 규칙 (순수 함수) |
+| `core/util.py` | 숫자·날짜·헤더 정규화 |
+| `core/browser.py` | 브라우저 확보 (전용 프로필 / 켜 둔 Chrome 에 붙기) |
+| `tests/` | pytest 48개 |
+| `samples/` | 실제 광고센터 파일 (테스트 기준 데이터) |
+| `_reference/` | 이전 버전 코드 — 참고용, 실행에는 쓰이지 않음 |
+
+## 테스트
+
+```
+python -m pytest tests/ -q
+```
+
+## 자주 나는 문제
+
+| 증상 | 해결 |
+|---|---|
+| `로그인이 풀렸습니다` | `python collect_live.py --login` 다시 실행 |
+| 전환 데이터가 0건 | 데이터 넣기 > 전환(DB) 시트 에서 파일 업로드 |
+| 매칭 안 된 DB가 많음 | `매칭 안 된 DB` 탭에서 utm_content 확인 (오타·삭제된 소재) |
+| 캡처에서 소재명을 못 찾음 | 표 부분만 크게 잘라서 다시 업로드 |
+| 숫자가 그대로 | 사이드바 **저장된 데이터 새로고침** |
