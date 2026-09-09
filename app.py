@@ -272,6 +272,45 @@ def daily_table(ad: pd.DataFrame, db: pd.DataFrame, override: dict,
     return pd.DataFrame(rows)
 
 
+METRIC_HELP = ("진행불가는 `건수 / 비율`, 접수·미팅·승인은 `건수 / 비율 / 영업단가` 입니다. "
+               "비율은 전환수 대비, 영업단가는 지출 ÷ 그 단계 건수. "
+               "CPM = 지출÷노출×1000 · CTR = 클릭÷노출 · CPC = 지출÷클릭 · 제출율 = 전환수÷클릭")
+
+
+def drilldown(g: pd.DataFrame) -> None:
+    """세트별로 보여 주다가, 세트를 누르면 그 세트의 소재로 들어간다."""
+    st.session_state.setdefault("set_focus", None)
+    st.session_state.setdefault("set_ver", 0)          # 되돌아올 때 표 선택을 비우려고
+    names = list(dict.fromkeys(g["광고그룹"]))          # group_table 행 순서와 같다
+
+    focus = st.session_state["set_focus"]
+    if focus in names:
+        c1, c2 = st.columns([1, 5])
+        if c1.button("← 세트 목록", key="back_to_sets"):
+            st.session_state["set_focus"] = None
+            st.session_state["set_ver"] += 1           # 눌러 둔 행을 잊게 한다
+            st.rerun()
+        view = g[g["광고그룹"] == focus]
+        v = totals(view)
+        c2.markdown(f"**{focus}** — 소재 {len(view)}개 · 지출 {v['지출']:,.0f}원 · "
+                    f"전환수 {int(v['전환수'])}건"
+                    + (f" · 전환단가 {round(v['지출'] / v['전환수']):,}원" if v["전환수"] else ""))
+        st.dataframe(creative_table(view).drop(columns=["광고그룹"]),
+                     width="stretch", hide_index=True, column_config=TABLE_CONFIG)
+        st.caption(METRIC_HELP)
+        return
+
+    st.caption("세트를 클릭하면 그 세트의 소재별로 들어갑니다.")
+    ev = st.dataframe(group_table(g), width="stretch", hide_index=True,
+                      column_config=TABLE_CONFIG, on_select="rerun",
+                      selection_mode="single-row", key=f"sets{st.session_state['set_ver']}")
+    picked = list(getattr(getattr(ev, "selection", None), "rows", []) or [])
+    if picked and picked[0] < len(names):
+        st.session_state["set_focus"] = names[picked[0]]
+        st.rerun()
+    st.caption(METRIC_HELP)
+
+
 # ================================================================ 화면
 def main() -> None:
     require_setup()
@@ -353,13 +392,10 @@ def main() -> None:
     with tabs[0]:
         st.dataframe(creative_table(g), width="stretch", hide_index=True,
                      column_config=TABLE_CONFIG)
-        st.caption("진행불가는 `건수 / 비율`, 접수·미팅·승인은 `건수 / 비율 / 영업단가` 입니다. "
-                   "비율은 전환수 대비, 영업단가는 지출 ÷ 그 단계 건수. "
-                   "CPM = 지출÷노출×1000 · CTR = 클릭÷노출 · CPC = 지출÷클릭 · 제출율 = 전환수÷클릭")
+        st.caption(METRIC_HELP)
 
     with tabs[1]:
-        st.dataframe(group_table(g), width="stretch", hide_index=True,
-                     column_config=TABLE_CONFIG)
+        drilldown(g)
 
     with tabs[2]:
         if d0 == d1:
