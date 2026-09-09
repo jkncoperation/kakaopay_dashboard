@@ -58,9 +58,12 @@ def push_to_sheet() -> tuple[bool, str]:
     if not sheet_id:
         return True, "시트 업로드: 안 함 (config.json 의 ad_sheet_id 가 비어 있음)"
     try:
-        from sources.ad_sheet import push_ad
-        n = push_ad(load_ad(), sheet_id, cfg.get("ad_worksheet", "KakaopayRAW"))
-        return True, f"시트 업로드: {n}행"
+        from sources.ad_sheet import push_split
+        r = push_split(load_ad(), sheet_id,
+                       today_ws=cfg.get("ad_worksheet_today", "KakaopayToday"),
+                       closed_ws=cfg.get("ad_worksheet_closed", "KakaopayDaily"))
+        return True, (f"시트 업로드: 당일 {r['today']}행 / 마감 {r['closed']}행"
+                      f" ({len(r['closed_dates'])}일치)")
     except Exception as exc:
         return False, f"시트 업로드: 실패 - {str(exc).splitlines()[0]}"
 

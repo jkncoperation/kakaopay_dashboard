@@ -7,5 +7,6 @@
   "profile_dir": "chrome-profile",
   "headless": true,
   "ad_sheet_id": "",
-  "ad_worksheet": "KakaopayRAW"
+  "ad_worksheet_today": "KakaopayToday",
+  "ad_worksheet_closed": "KakaopayDaily"
 }

@@ -18,7 +18,14 @@ from parsers.adcenter_file import AD_COLUMNS
 from sources.db_sheet import DBSheetError, SA_FILE, service_account_email, service_account_path
 
 WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-DEFAULT_WORKSHEET = "KakaopayRAW"
+DEFAULT_WORKSHEET = "KakaopayRAW"          # 예전 단일 탭 (마이그레이션·폴백용)
+
+# 탭을 둘로 나눈다.
+#   Today  - 당일 실시간. 30분마다 통째로 갈아끼운다. 계속 변하는 값.
+#   Daily  - 마감된 과거 날짜. 날짜 단위로만 채워 넣고 기존 날짜는 건드리지 않는다.
+# 한 탭에 전부 담고 매번 전체 재작성하면, 로컬 저장소가 비었을 때 과거 기록까지 날아간다.
+TODAY_WORKSHEET = "KakaopayToday"
+CLOSED_WORKSHEET = "KakaopayDaily"
 
 
 def _client(creds_info: dict | None, creds_file: str, scopes: list[str]):
@@ -121,3 +128,90 @@ def last_collected_at(sheet_id: str, worksheet: str = DEFAULT_WORKSHEET,
     if date is not None:
         df = df[df["날짜"] == date]
     return max(df["수집시각"].astype(str)) if len(df) else None
+
+
+# ---------------------------------------------------------------- 마감/실시간 분리
+def _write(ws, df: pd.DataFrame) -> int:
+    d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
+    for c in AD_COLUMNS:
+        if c not in d:
+            d[c] = ""
+    d = d[AD_COLUMNS]
+    d["날짜"] = d["날짜"].map(
+        lambda v: v.isoformat() if isinstance(v, (dt.date, dt.datetime)) else ("" if v is None else str(v)))
+    d = d.sort_values(["날짜", "광고그룹", "소재"])
+    values = [AD_COLUMNS] + d.astype(object).where(pd.notna(d), "").values.tolist()
+    ws.clear()
+    ws.update(values, "A1", value_input_option="USER_ENTERED")
+    return len(d)
+
+
+def _read(ws) -> pd.DataFrame:
+    vals = ws.get_all_values()
+    if not vals or len(vals) < 2:
+        return pd.DataFrame(columns=AD_COLUMNS)
+    df = pd.DataFrame(vals[1:], columns=[h.strip() for h in vals[0]])
+    for c in AD_COLUMNS:
+        if c not in df:
+            df[c] = ""
+    df = df[AD_COLUMNS]
+    df["날짜"] = pd.to_datetime(df["날짜"], errors="coerce").dt.date
+    for c in ["소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    return df[df["날짜"].notna()].reset_index(drop=True)
+
+
+def push_split(df: pd.DataFrame, sheet_id: str, today=None,
+               today_ws: str = TODAY_WORKSHEET, closed_ws: str = CLOSED_WORKSHEET,
+               creds_info: dict | None = None, creds_file: str = SA_FILE) -> dict:
+    """당일은 실시간 탭에 통째로, 마감된 날짜는 마감 탭에 날짜 단위로 채워 넣는다.
+
+    마감 탭은 '해당 날짜의 행만' 갈아끼우므로, 로컬에 없는 예전 날짜는 시트에 그대로 남는다.
+    """
+    today = today or dt.date.today()
+    d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
+    if len(d):
+        d["날짜"] = pd.to_datetime(d["날짜"], errors="coerce").dt.date
+        d = d[d["날짜"].notna()]
+
+    cur = d[d["날짜"] == today] if len(d) else d
+    past = d[d["날짜"] < today] if len(d) else d
+
+    ws_today = _open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
+    n_today = _write(ws_today, cur)
+
+    ws_closed = _open(sheet_id, closed_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
+    existing = _read(ws_closed)
+    if len(past):
+        dates = set(past["날짜"])
+        keep = existing[~existing["날짜"].isin(dates)] if len(existing) else existing
+        merged = pd.concat([keep, past], ignore_index=True)
+    else:
+        merged = existing
+    merged = merged[merged["날짜"] != today] if len(merged) else merged   # 오늘은 마감 탭에 두지 않는다
+    n_closed = _write(ws_closed, merged)
+    return {"today": n_today, "closed": n_closed,
+            "closed_dates": sorted({str(x) for x in merged["날짜"]}) if len(merged) else []}
+
+
+def read_split(sheet_id: str, today_ws: str = TODAY_WORKSHEET, closed_ws: str = CLOSED_WORKSHEET,
+               creds_info: dict | None = None, creds_file: str = SA_FILE,
+               start=None, end=None) -> pd.DataFrame:
+    """두 탭을 합쳐 읽는다. 같은 날짜가 겹치면 실시간 탭을 우선한다."""
+    frames = []
+    for name, first in ((today_ws, True), (closed_ws, False)):
+        try:
+            frames.append((_read(_open(sheet_id, name, creds_info, creds_file, WRITE_SCOPES)), first))
+        except Exception:
+            continue                      # 탭이 아직 없으면 건너뛴다
+    if not frames:
+        return pd.DataFrame(columns=AD_COLUMNS)
+    df = pd.concat([f for f, _ in sorted(frames, key=lambda x: not x[1])], ignore_index=True)
+    if df.empty:
+        return df
+    df = df.drop_duplicates(subset=["날짜", "광고그룹", "소재"], keep="first")
+    if start is not None:
+        df = df[df["날짜"] >= start]
+    if end is not None:
+        df = df[df["날짜"] <= end]
+    return df.reset_index(drop=True)

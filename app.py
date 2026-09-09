@@ -89,9 +89,11 @@ def _sa_info():
 
 @st.cache_data(ttl=120, show_spinner="시트에서 불러오는 중…")
 def _sheet_ad(start, end):
-    from sources.ad_sheet import read_ad
-    return read_ad(_secret("ad_sheet_id"), _secret("ad_worksheet", "KakaopayRAW"),
-                   creds_info=_sa_info(), start=start, end=end)
+    from sources.ad_sheet import read_split
+    return read_split(_secret("ad_sheet_id"),
+                      today_ws=_secret("ad_worksheet_today", "KakaopayToday"),
+                      closed_ws=_secret("ad_worksheet_closed", "KakaopayDaily"),
+                      creds_info=_sa_info(), start=start, end=end)
 
 
 @st.cache_data(ttl=120, show_spinner="시트에서 불러오는 중…")

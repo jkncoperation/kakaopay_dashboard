@@ -44,7 +44,8 @@ def main() -> int:
     out = [
         f"app_password = {q(pw)}",
         f"ad_sheet_id = {q(ad_id)}",
-        f"ad_worksheet = {q(cfg.get('ad_worksheet', 'KakaopayRAW'))}",
+        f"ad_worksheet_today = {q(cfg.get('ad_worksheet_today', 'KakaopayToday'))}",
+        f"ad_worksheet_closed = {q(cfg.get('ad_worksheet_closed', 'KakaopayDaily'))}",
         'db_sheet_id = "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4"',
         "",
         "[gcp_service_account]",
