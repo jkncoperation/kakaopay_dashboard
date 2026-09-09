@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core.metrics import build_creative_table, report_text, summarize, unmatched_db  # noqa: E402
+from core.metrics import build_creative_table, summarize, unmatched_db  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources.ad_sheet import CLOSED_COLUMNS, _from_sheet, _to_sheet  # noqa: E402
 from sources.db_sheet import DB_COLUMNS, DBSheetError, _normalize  # noqa: E402
@@ -84,18 +84,6 @@ def test_full_pipeline(data):
     assert by.loc["채무조정_ad6", "전환단가"] == round(378600 / 12)
     assert by.loc["채무조정2_ad2", "전환수"] == 4
     assert by.loc["채무조정3_ad1", "전환수"] == 2
-
-
-def test_report_matches_summary(data):
-    ad, db = data
-    g = build_creative_table(ad, db)
-    s = summarize(g)
-    txt = report_text(g, s, D, D)
-    assert f"- 총 지출: {s['지출']:,.0f}원" in txt
-    assert f"- 총 전환수: {s['총전환수']}건" in txt
-    assert f"- 전환단가: {s['전환단가']:,}원" in txt
-    assert s["지출"] == 543640
-    assert "차감" not in txt
 
 
 def test_period_merges_renamed_sets():

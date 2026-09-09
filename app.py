@@ -3,10 +3,10 @@
     streamlit run app.py
 
 광고센터에서 받은 다운로드 파일을 올리면 구글 시트에 기록하고, 그 시트와 전환(DB) 시트를
-소재번호로 맞춰 소재별 소진 · 전환수 · 전환단가를 보여 준다.
+소재번호로 맞춰 소재별 지출 · 전환수 · 전환단가를 보여 준다.
 
     다운로드 파일 ─▶ 광고 시트 (당일 탭 / 마감 탭) ─┐
-                     전환(DB) 시트 ─────────────────┴─▶ 소재별 집계 · 차트 · 복사용 리포트
+                     전환(DB) 시트 ─────────────────┴─▶ 소재별 집계 표
 
 로컬에서는 `config.json` + `service_account.json`, Streamlit Cloud 에서는 Secrets 를 쓴다.
 코드 경로는 하나다.
@@ -18,7 +18,6 @@ import json
 import sys
 from pathlib import Path
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -26,19 +25,13 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
 from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E402
-                          content_key, parse_pairs, rate, report_text, stage_cell,
-                          summarize, unmatched_db)
+                          content_key, parse_pairs, stage_cell, summarize,
+                          unmatched_db)
 from core.util import today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import ad_sheet, db_sheet  # noqa: E402
 
 st.set_page_config(page_title="카카오페이 대시보드", page_icon="📊", layout="wide")
-
-# 지시서 지정 색. 라이트 배경에서 6개 검사 통과(CVD ΔE 24.7).
-COLOR_SPEND, COLOR_DB = "#2a78d6", "#eb6834"
-GRID = {"gridColor": "#e8e8e6", "domainColor": "#d8d8d5", "tickColor": "#d8d8d5",
-        "labelColor": "#5a5a58", "titleColor": "#5a5a58"}
-
 
 def money(v) -> str:
     return "-" if v is None or pd.isna(v) else f"{v:,.0f}원"
@@ -218,6 +211,7 @@ TABLE_CONFIG = {
     "승인": st.column_config.TextColumn(width="medium"),
     "CPM": st.column_config.NumberColumn(format="%,d", width="small"),
     "CTR": st.column_config.TextColumn(width="small"),
+    "CPC": st.column_config.NumberColumn(format="%,d", width="small"),
     "제출율": st.column_config.TextColumn(width="small"),
 }
 
@@ -318,41 +312,21 @@ def main() -> None:
     c[0].metric("지출", money(s["지출"]))
     c[1].metric("총 전환수", f"{s['총전환수']}건")
     c[2].metric("전환단가", money(s["전환단가"]))
-    c[3].metric("접수 이상", f"{s['접수이상']}건")
-    c[4].metric("미전환 소재 지출", money(s["미전환소재지출"]))
+    c[3].metric("접수", f"{s['접수']}건")
+    c[4].metric("미팅", f"{s['미팅']}건")
     st.caption(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
                f" · 세트 {g['광고그룹'].nunique()}개 · 소재 {len(g)}개" +
                (f" · ⚠ 소재와 매칭 안 된 전환 {len(um)}건" if len(um) else "") +
                (" · 이 기간에 들어온 전환 없음" if db.empty else ""))
 
-    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환", "복사용 리포트"])
+    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환"])
 
     with tabs[0]:
         st.dataframe(stage_table(g), width="stretch", hide_index=True,
                      column_config=TABLE_CONFIG)
         st.caption("진행불가는 `건수 / 비율`, 접수·미팅·승인은 `건수 / 비율 / 영업단가` 입니다. "
                    "비율은 전환수 대비, 영업단가는 지출 ÷ 그 단계 건수. "
-                   "CPM = 지출÷노출×1000 · CTR = 클릭÷노출 · 제출율 = 전환수÷클릭")
-
-        plot = g[g["지출"] > 0].copy()
-        if len(plot):
-            h = max(200, 24 * len(plot) + 40)
-            base = alt.Chart(plot).encode(
-                y=alt.Y("소재:N", sort="-x", title=None, axis=alt.Axis(labelLimit=200)))
-            spend = base.mark_bar(color=COLOR_SPEND, cornerRadiusEnd=4, size=13).encode(
-                x=alt.X("지출:Q", title="지출(원)", axis=alt.Axis(format="~s")),
-                tooltip=[alt.Tooltip("광고그룹:N", title="세트"), alt.Tooltip("소재:N"),
-                         alt.Tooltip("지출:Q", format=","), alt.Tooltip("전환수:Q"),
-                         alt.Tooltip("전환단가:Q", format=",")])
-            dbc = base.mark_bar(color=COLOR_DB, cornerRadiusEnd=4, size=13).encode(
-                x=alt.X("전환수:Q", title="전환수(건)"),
-                tooltip=[alt.Tooltip("광고그룹:N", title="세트"), alt.Tooltip("소재:N"),
-                         alt.Tooltip("전환수:Q"), alt.Tooltip("전환단가:Q", format=",")])
-            cc = st.columns(2)
-            cc[0].altair_chart(spend.properties(title="소재별 지출", height=h)
-                               .configure_axis(**GRID).configure_view(strokeWidth=0), width="stretch")
-            cc[1].altair_chart(dbc.properties(title="소재별 전환수", height=h)
-                               .configure_axis(**GRID).configure_view(strokeWidth=0), width="stretch")
+                   "CPM = 지출÷노출×1000 · CTR = 클릭÷노출 · CPC = 지출÷클릭 · 제출율 = 전환수÷클릭")
 
     with tabs[1]:
         t = (g.groupby("광고그룹", as_index=False)
@@ -381,19 +355,6 @@ def main() -> None:
             daily["전환단가"] = [round(a / b) if b else None
                               for a, b in zip(daily["지출"], daily["전환수"])]
 
-            def line(col, color, title, unit):
-                return (alt.Chart(daily).mark_line(color=color, strokeWidth=2,
-                                                   point=alt.OverlayMarkDef(size=70, color=color))
-                        .encode(x=alt.X("날짜:T", title=None), y=alt.Y(f"{col}:Q", title=unit),
-                                tooltip=[alt.Tooltip("날짜:T"), alt.Tooltip("지출:Q", format=","),
-                                         alt.Tooltip("전환수:Q"),
-                                         alt.Tooltip("전환단가:Q", format=",")])
-                        .properties(title=title, height=280)
-                        .configure_axis(**GRID).configure_view(strokeWidth=0))
-
-            cc = st.columns(2)
-            cc[0].altair_chart(line("지출", COLOR_SPEND, "일별 지출", "지출(원)"), width="stretch")
-            cc[1].altair_chart(line("전환수", COLOR_DB, "일별 전환수", "전환수(건)"), width="stretch")
             st.dataframe(daily, width="stretch", hide_index=True,
                          column_config={x: st.column_config.NumberColumn(format="%,d")
                                         for x in ["지출", "전환단가"]})
@@ -408,10 +369,6 @@ def main() -> None:
                        "utm_content 오타이거나, 삭제된 소재 또는 선택하지 않은 세트의 전환일 수 있습니다.")
             st.dataframe(um[["날짜", "utm_campaign", "utm_content", "접수상태", "승인상태", "구분"]],
                          width="stretch", hide_index=True)
-
-    with tabs[4]:
-        st.caption("아래 내용을 그대로 복사해 채팅에 붙여넣으세요.")
-        st.code(report_text(g, s, d0, d1), language=None)
 
 
 if __name__ == "__main__":

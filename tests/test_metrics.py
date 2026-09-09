@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.metrics import (build_creative_table, content_key, creative_key,  # noqa: E402
-                          parse_pairs, report_text, summarize, unmatched_db)
+                          parse_pairs, summarize, unmatched_db)
 from sources.db_sheet import status_bucket, status_flags  # noqa: E402
 
 D = dt.date(2026, 9, 9)
@@ -115,7 +115,6 @@ def test_basic_aggregation_and_db_price():
     assert s["총전환수"] == 3
     assert s["지출"] == 89400
     assert s["전환단가"] == round(89400 / 3)                 # 총소진÷총DB
-    assert s["미전환소재지출"] == 12000
 
 
 def test_zero_db_creatives_are_kept():
@@ -168,19 +167,6 @@ def test_parse_pairs():
         {"채무조정_ad2": 26400.0, "채무조정2_ad6": 1200.0}
 
 
-def test_report_text_shape():
-    ad = pd.DataFrame([ad_row("채무조정_ad6", "채무조정 세트", 51000)])
-    db = pd.DataFrame([db_row("kakaopay_ad1-6", "접수완료")])
-    g = build_creative_table(ad, db)
-    txt = report_text(g, summarize(g), D)
-    assert "[소재별 전환 현황] — 2026-09-09" in txt
-    assert "■ 채무조정 세트" in txt
-    assert "- 전환수: 1건" in txt
-    assert "- 전환단가: 51,000원" in txt
-    assert "- 총 지출: 51,000원" in txt
-    assert "차감" not in txt
-
-
 def test_db_columns_have_no_duplicates():
     """원본 상태값과 집계 플래그가 같은 이름을 쓰면 열이 조용히 덮어써진다."""
     from sources.db_sheet import BUCKETS, DB_COLUMNS
@@ -202,7 +188,7 @@ def test_meeting_counts_in_both_meeting_and_received():
     assert r["미팅"] == 1
     assert r["접수"] == 2          # 미팅확정 + 접수완료
     assert r["진행불가"] == 1
-    assert summarize(g)["접수이상"] == 2
+    assert summarize(g)["접수"] == 2
 
 
 # ---------------------------------------------------------------- 표시용 지표
@@ -236,3 +222,23 @@ def test_ctr_keeps_two_digits():
     b = ad_metrics(spend=1, impressions=100000, clicks=210, conversions=0)
     assert a["CTR"] == "0.24%" and b["CTR"] == "0.21%"
     assert a["CTR"] != b["CTR"]
+
+
+def test_cpc_added_after_ctr():
+    """CPC = 지출 / 클릭수. 열 순서는 CPM, CTR, CPC, 제출율."""
+    from core.metrics import ad_metrics
+    m = ad_metrics(spend=378600, impressions=546662, clicks=1262, conversions=18)
+    assert m["CPC"] == round(378600 / 1262)                 # 300
+    assert list(m) == ["CPM", "CTR", "CPC", "제출율"]
+    assert ad_metrics(spend=1000, impressions=100, clicks=0, conversions=0)["CPC"] is None
+
+
+def test_summary_splits_received_and_meeting():
+    """헤드라인은 '접수 이상' 하나가 아니라 접수·미팅 둘로 나뉜다."""
+    ad = pd.DataFrame([ad_row("채무조정_ad6", "세트1", 50000)])
+    db = pd.DataFrame([db_row("kakaopay_ad1-6", "미팅확정"),
+                       db_row("kakaopay_ad1-6", "접수완료"),
+                       db_row("kakaopay_ad1-6", "자산과다")])
+    s = summarize(build_creative_table(ad, db))
+    assert s["접수"] == 2 and s["미팅"] == 1
+    assert "접수이상" not in s and "미전환소재지출" not in s

@@ -106,9 +106,9 @@ def summarize(g: pd.DataFrame) -> dict:
         "지출": spend,
         "총전환수": total,
         "전환단가": round(spend / total) if total else None,
-        "미전환소재지출": float(g.loc[g["전환수"] == 0, "지출"].sum()) if len(g) else 0.0,
-        # 접수가 이미 미팅확정을 포함하므로 그대로가 '접수 이상' 이다
-        "접수이상": int(g["접수"].sum()) if len(g) else 0,
+        # 접수는 미팅확정을 포함한다(깔때기). 미팅은 그중 미팅까지 간 건수.
+        "접수": int(g["접수"].sum()) if len(g) else 0,
+        "미팅": int(g["미팅"].sum()) if len(g) else 0,
         "클릭": float(g["클릭"].sum()) if len(g) else 0.0,
     }
 
@@ -119,28 +119,6 @@ def unmatched_db(g: pd.DataFrame, db: pd.DataFrame) -> pd.DataFrame:
     d["key"] = d["utm_content"].map(content_key)
     known = set(g["key"].dropna()) if len(g) else set()
     return d[~d["key"].isin(known)].reset_index(drop=True)
-
-
-def report_text(g: pd.DataFrame, summary: dict, d0, d1=None) -> str:
-    """채팅에 그대로 붙여넣는 복사용 리포트."""
-    period = f"{d0}" + (f" ~ {d1}" if d1 and d1 != d0 else "")
-    lines = [f"[소재별 전환 현황] — {period}", ""]
-    for setname, part in g.groupby("광고그룹", sort=False):
-        lines.append(f"■ {setname}")
-        for _, r in part.iterrows():
-            tag = f" ({r['상태']})" if r["상태"] and r["상태"] != "진행중" else ""
-            lines.append(f"{r['소재']}{tag}")
-            lines.append(f"- 지출: {r['지출']:,.0f}원")
-            lines.append(f"- 전환수: {int(r['전환수'])}건")
-            lines.append(f"- 전환단가: {int(r['전환단가']):,}원"
-                         if pd.notna(r["전환단가"]) else "- 전환단가: -")
-            lines.append("")
-    lines += ["[합계]",
-              f"- 총 지출: {summary['지출']:,.0f}원",
-              f"- 총 전환수: {summary['총전환수']}건",
-              f"- 전환단가: {summary['전환단가']:,}원" if summary["전환단가"] else "- 전환단가: -",
-              f"- 미전환 소재 지출: {summary['미전환소재지출']:,.0f}원"]
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- 표시용 지표
@@ -163,10 +141,14 @@ def stage_cell(count: int, total: int, spend: float, with_price: bool = True) ->
 
 
 def ad_metrics(spend: float, impressions: float, clicks: float, conversions: int) -> dict:
-    """광고 효율 지표. CPM = 지출/노출*1000, CTR = 클릭/노출, 제출율 = 전환/클릭."""
+    """광고 효율 지표.
+
+    CPM = 지출/노출*1000 · CTR = 클릭/노출 · CPC = 지출/클릭 · 제출율 = 전환/클릭
+    """
     return {
         "CPM": round(spend / impressions * 1000) if impressions else None,
         # CTR 은 0.2% 대라 소수 한 자리면 자릿수를 잃는다
         "CTR": rate(clicks, impressions, digits=2),
+        "CPC": round(spend / clicks) if clicks else None,
         "제출율": rate(conversions, clicks),
     }
