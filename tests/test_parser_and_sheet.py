@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from parsers.adcenter_file import AD_COLUMNS, ParseError, parse_adcenter_file  # noqa: E402
-from sources.ad_sheet import (CLOSED_COLUMNS, TODAY_COLUMNS, _from_sheet,  # noqa: E402
-                              _to_sheet)
+from sources.ad_sheet import (CLOSED_COLUMNS, SHEET_COLUMNS, TODAY_COLUMNS,  # noqa: E402
+                              _from_sheet, _to_sheet)
 
 SAMPLE_0909 = ROOT / "samples" / "(카카오페이)법무법인 평온_소재_20260909_20260909.xlsx"
 SAMPLE_0906 = ROOT / "samples" / "(카카오페이)법무법인 평온_소재_20260906_20260906.xlsx"
@@ -69,7 +69,7 @@ def test_sheet_parses_comma_numbers_and_percent():
     assert df.loc[0, "소진비용"] == 423900          # '423,900'
     assert df.loc[0, "노출수"] == 345173
     assert abs(df.loc[0, "클릭률"] - 0.0041) < 1e-9  # '0.41%' -> 비율
-    assert df.loc[0, "출처"] == ""                   # 없는 열은 빈값
+    assert list(df.columns) == AD_COLUMNS            # 열 구성이 표준과 같다
 
 
 def test_sheet_accepts_both_date_headers():
@@ -88,8 +88,21 @@ def test_sheet_roundtrip_keeps_values():
 def test_sheet_headers():
     df = _from_sheet(SHEET_ROWS)
     assert _to_sheet(df, CLOSED_COLUMNS)[0] == CLOSED_COLUMNS
-    assert _to_sheet(df, TODAY_COLUMNS)[0] == TODAY_COLUMNS
-    assert CLOSED_COLUMNS[0] == "일자"               # 다운로드 파일과 같은 열 구성
+    assert TODAY_COLUMNS == CLOSED_COLUMNS == SHEET_COLUMNS   # 두 탭 열 구성이 같다
+    assert SHEET_COLUMNS[0] == "일자"
+    assert "시작일" not in SHEET_COLUMNS and "종료일" not in SHEET_COLUMNS
+
+
+def test_blank_date_becomes_given_default():
+    """당일 탭: 다운로드 파일에는 날짜 열이 없어 그대로 붙여 넣으면 일자가 빈다."""
+    rows = [["일자", "소재", "소진비용"], ["", "채무조정_ad6", "1,000"]]
+    assert _from_sheet(rows).empty                       # 기본값 없으면 버림
+    df = _from_sheet(rows, default_date=dt.date(2026, 9, 10))
+    assert len(df) == 1 and df.loc[0, "날짜"] == dt.date(2026, 9, 10)
+
+    no_date_col = [["소재", "소진비용"], ["채무조정_ad6", "1,000"]]
+    df2 = _from_sheet(no_date_col, default_date=dt.date(2026, 9, 10))
+    assert len(df2) == 1 and df2.loc[0, "소진비용"] == 1000
 
 
 def test_sheet_skips_blank_and_bad_rows():

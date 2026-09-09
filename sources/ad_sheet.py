@@ -31,11 +31,12 @@ WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 TODAY_WORKSHEET = "KakaopayToday"
 CLOSED_WORKSHEET = "KakaopayDaily"
 
-# 마감 탭 = 광고센터 다운로드 파일과 같은 열 구성 (날짜 열 이름만 '일자')
-CLOSED_COLUMNS = ["일자", "소재", "ON/OFF", "상태", "광고그룹", "광고상품",
-                  "소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC"]
-# 당일 탭 = 위에 더해 언제·어디서 수집했는지까지 (대시보드가 '수집 시각' 을 보여 준다)
-TODAY_COLUMNS = CLOSED_COLUMNS + ["시작일", "종료일", "출처", "수집시각"]
+# 두 탭 모두 광고센터 다운로드 파일과 같은 열 구성 (날짜 열 이름만 '일자').
+# 파일의 시작일/종료일은 캠페인 게재 기간이라 성과와 무관해 넣지 않는다.
+SHEET_COLUMNS = ["일자", "소재", "ON/OFF", "상태", "광고그룹", "광고상품",
+                 "소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC"]
+CLOSED_COLUMNS = SHEET_COLUMNS
+TODAY_COLUMNS = SHEET_COLUMNS
 
 DATE_HEADERS = ("일자", "날짜")
 NUM_HEADERS = ("소진비용", "노출수", "클릭수", "도달수", "eCPM", "CPC")
@@ -99,11 +100,14 @@ def _to_sheet(df: pd.DataFrame, columns: list[str]) -> list[list]:
     return [columns] + d.astype(object).where(pd.notna(d), "").values.tolist()
 
 
-def _from_sheet(vals: list[list]) -> pd.DataFrame:
+def _from_sheet(vals: list[list], default_date=None) -> pd.DataFrame:
     """시트의 2차원 값 -> 표준 스키마.
 
     헤더 이름으로 찾으므로 열 순서가 달라도 되고, 없는 열은 빈값/0 으로 채운다.
     '1,234' 콤마 숫자와 '0.22%' 퍼센트 표기를 모두 받는다.
+
+    default_date 를 주면 일자가 비어 있는 행을 그 날짜로 본다. 당일 탭에 쓰는데,
+    다운로드 파일에는 날짜 열이 없어서 사람이 그대로 붙여 넣어도 오늘 것으로 잡히게 한다.
     """
     if not vals or len(vals) < 2:
         return pd.DataFrame(columns=AD_COLUMNS)
@@ -115,7 +119,9 @@ def _from_sheet(vals: list[list]) -> pd.DataFrame:
     out = pd.DataFrame(index=raw.index)
     date_col = next((h for h in DATE_HEADERS if h in raw.columns), None)
     out["날짜"] = pd.to_datetime(raw[date_col], errors="coerce").dt.date if date_col else None
-    for c in ["소재", "ON/OFF", "상태", "광고그룹", "광고상품", "시작일", "종료일", "출처", "수집시각"]:
+    if default_date is not None:
+        out["날짜"] = out["날짜"].map(lambda v: default_date if pd.isna(v) or v is None else v)
+    for c in ["소재", "ON/OFF", "상태", "광고그룹", "광고상품"]:
         out[c] = raw[c].astype(str).str.strip() if c in raw.columns else ""
     for c in NUM_HEADERS:
         out[c] = raw[c].map(to_num) if c in raw.columns else 0.0
@@ -132,8 +138,8 @@ def _write(ws, df: pd.DataFrame, columns: list[str]) -> int:
     return len(values) - 1
 
 
-def _read(ws) -> pd.DataFrame:
-    return _from_sheet(ws.get_all_values())
+def _read(ws, default_date=None) -> pd.DataFrame:
+    return _from_sheet(ws.get_all_values(), default_date=default_date)
 
 
 # ---------------------------------------------------------------- 쓰기 / 읽기
@@ -157,6 +163,8 @@ def push_split(df: pd.DataFrame, sheet_id: str, today=None,
     past = d[d["날짜"] < today] if len(d) else d
 
     ws_today = _open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
+    if len(cur):
+        cur = cur.assign(날짜=today)            # 당일 탭의 일자는 항상 오늘
     n_today = _write(ws_today, cur, TODAY_COLUMNS)
 
     if not include_past:
@@ -181,9 +189,11 @@ def read_split(sheet_id: str, today_ws: str = TODAY_WORKSHEET, closed_ws: str = 
                start=None, end=None) -> pd.DataFrame:
     """두 탭을 합쳐 읽는다. 같은 날짜가 겹치면 실시간 탭을 우선한다."""
     frames = []
-    for name in (today_ws, closed_ws):          # 당일 탭을 먼저 넣어 우선권을 준다
+    today = dt.date.today()
+    for name, blank_is in ((today_ws, today), (closed_ws, None)):   # 당일 탭이 우선
         try:
-            frames.append(_read(_open(sheet_id, name, creds_info, creds_file, WRITE_SCOPES)))
+            ws = _open(sheet_id, name, creds_info, creds_file, WRITE_SCOPES)
+            frames.append(_read(ws, default_date=blank_is))
         except Exception:
             continue                            # 탭이 아직 없으면 건너뛴다
     if not frames:
@@ -199,25 +209,13 @@ def read_split(sheet_id: str, today_ws: str = TODAY_WORKSHEET, closed_ws: str = 
     return df.reset_index(drop=True)
 
 
-def last_collected_at(sheet_id: str, today_ws: str = TODAY_WORKSHEET,
-                      creds_info: dict | None = None, creds_file: str = SA_FILE) -> str | None:
-    """당일 탭의 마지막 수집 시각."""
-    try:
-        df = _read(_open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES))
-    except Exception:
-        return None
-    vals = [v for v in df["수집시각"].astype(str) if v.strip()] if len(df) else []
-    return max(vals) if vals else None
-
-
 def upsert_upload(df: pd.DataFrame, sheet_id: str, today=None,
                   today_ws: str = TODAY_WORKSHEET, closed_ws: str = CLOSED_WORKSHEET,
                   creds_info: dict | None = None, creds_file: str = SA_FILE) -> dict:
     """사람이 올린 다운로드 파일을 시트에 반영한다.
 
-    push_split 과 다른 점: **올린 파일에 든 날짜만** 건드린다.
-    과거 날짜만 올렸으면 당일 탭은 손대지 않고, 당일만 올렸으면 마감 탭을 손대지 않는다.
-    (push_split 은 로컬 저장소 전체를 기준으로 삼아 당일 탭을 비워 버릴 수 있다)
+    **올린 파일에 든 날짜만** 건드린다. 과거 날짜만 올렸으면 당일 탭은 손대지 않고,
+    당일만 올렸으면 마감 탭을 손대지 않는다. 당일 탭의 일자는 항상 오늘로 적는다.
     """
     today = today or dt.date.today()
     d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
@@ -229,13 +227,13 @@ def upsert_upload(df: pd.DataFrame, sheet_id: str, today=None,
 
     cur, past = d[d["날짜"] == today], d[d["날짜"] < today]
     future = d[d["날짜"] > today]
-    if len(future):                      # 미래 날짜는 마감으로 볼 수 없어 그대로 마감 탭에 둔다
+    if len(future):                      # 미래 날짜는 마감으로 볼 수 없어 마감 탭에 둔다
         past = pd.concat([past, future], ignore_index=True)
 
     n_today = 0
     if len(cur):
         ws = _open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
-        n_today = _write(ws, cur, TODAY_COLUMNS)
+        n_today = _write(ws, cur.assign(날짜=today), TODAY_COLUMNS)
 
     n_closed = 0
     if len(past):

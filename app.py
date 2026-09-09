@@ -212,11 +212,12 @@ def main() -> None:
     if c1.button("시트 다시 읽기", type="primary", help="구글 시트를 다시 읽어 화면을 갱신합니다"):
         st.cache_data.clear()
         st.rerun()
-    last = ad_sheet.last_collected_at(conf("ad_sheet_id"),
-                                      today_ws=conf("ad_worksheet_today", ad_sheet.TODAY_WORKSHEET),
-                                      creds_info=sa_info())
-    c2.caption(f"당일 데이터 마지막 갱신: **{last or '없음'}** · "
-               "광고센터에서 파일을 받아 올리면 갱신됩니다.")
+    today_df = load_ad(dt.date.today(), dt.date.today())
+    c2.caption(
+        (f"오늘({dt.date.today()}) 데이터: **{len(today_df)}개 소재 · "
+         f"소진 {today_df['소진비용'].sum():,.0f}원**" if len(today_df)
+         else "오늘 데이터가 아직 없습니다.")
+        + " · 광고센터에서 파일을 받아 올리면 갱신됩니다.")
 
     dates = available_dates()
     with st.expander("데이터 넣기", expanded=not dates):

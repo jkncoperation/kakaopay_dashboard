@@ -19,9 +19,9 @@ import pandas as pd
 from core.util import dates_from_filename, norm_header, to_num, to_ratio
 
 # 표준 스키마 - 수집 경로(파일/실시간/캡처)가 달라도 항상 이 열로 맞춘다
+# 시트 열과 1:1. 시작일/종료일은 캠페인 게재 기간이라 성과 집계에 쓸 일이 없어 뺐다.
 AD_COLUMNS = ["날짜", "소재", "ON/OFF", "상태", "광고그룹", "광고상품",
-              "소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC",
-              "시작일", "종료일", "출처", "수집시각"]
+              "소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC"]
 
 NUM_COLS = ["소진비용", "노출수", "클릭수", "도달수", "eCPM", "CPC"]
 
@@ -39,9 +39,6 @@ ALIASES: dict[str, list[str]] = {
     "도달수": ["도달수", "도달"],
     "eCPM": ["ecpm"],
     "CPC": ["cpc"],
-    "시작일": ["시작일", "게재시작일", "시작"],
-    "종료일": ["종료일", "게재종료일", "종료"],
-    "기간": ["기간", "게재기간"],          # 화면 표는 '2026-09-09 ~ 2026-12-31' 한 칸
 }
 
 
@@ -90,18 +87,16 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
     return found
 
 
-def parse_adcenter_file(src, filename: str | None = None,
-                        date=None, 출처: str = "file") -> dict:
+def parse_adcenter_file(src, filename: str | None = None, date=None) -> dict:
     """광고센터 파일 → {'df': 표준 DataFrame, 'start':, 'end':, 'warnings': [...]}
 
     date 를 주면 파일명보다 우선한다. 기간 파일(시작≠종료)이면 경고를 남긴다.
     """
     name = filename or (str(src) if isinstance(src, (str, Path)) else "")
-    return normalize_raw(_read_raw(src, filename), filename=name, date=date, 출처=출처)
+    return normalize_raw(_read_raw(src, filename), filename=name, date=date)
 
 
-def normalize_raw(df: pd.DataFrame, filename: str | None = None,
-                  date=None, 출처: str = "file") -> dict:
+def normalize_raw(df: pd.DataFrame, filename: str | None = None, date=None) -> dict:
     """이미 읽어들인 표(DataFrame) → 표준 스키마.
 
     파일 경로와 실시간 화면 읽기 경로가 같은 정규화를 쓰도록 분리해 둔 지점.
@@ -130,21 +125,12 @@ def normalize_raw(df: pd.DataFrame, filename: str | None = None,
     out = pd.DataFrame(index=df.index)
     out["날짜"] = start
     out["소재"] = df[colmap["소재"]].map(lambda v: str(v).strip() if v is not None else "")
-    for std in ["ON/OFF", "상태", "광고그룹", "광고상품", "시작일", "종료일"]:
+    for std in ["ON/OFF", "상태", "광고그룹", "광고상품"]:
         out[std] = df[colmap[std]].map(lambda v: str(v).strip() if v is not None else "") \
             if std in colmap else ""
     for std in NUM_COLS:
         out[std] = df[colmap[std]].map(to_num) if std in colmap else 0.0
     out["클릭률"] = df[colmap["클릭률"]].map(to_ratio) if "클릭률" in colmap else 0.0
-
-    # 화면 표는 시작·종료가 '기간' 한 칸에 들어온다 ('2026-09-09 ~ 2026-12-31')
-    if "기간" in colmap and "시작일" not in colmap:
-        parts = df[colmap["기간"]].map(lambda v: str(v or "").split("~"))
-        out["시작일"] = parts.map(lambda x: x[0].strip() if x else "")
-        out["종료일"] = parts.map(lambda x: x[1].strip() if len(x) > 1 else "")
-
-    out["출처"] = 출처
-    out["수집시각"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # 합계행·빈 행 제거
     before = len(out)
@@ -153,8 +139,7 @@ def normalize_raw(df: pd.DataFrame, filename: str | None = None,
     if len(out) < before:
         warnings.append(f"소재명이 비었거나 합계인 행 {before - len(out)}개를 건너뛰었습니다.")
 
-    filled = set(colmap) | ({"시작일", "종료일"} if "기간" in colmap else set())
-    missing = [c for c in ALIASES if c not in filled and c != "기간"]
+    missing = [c for c in ALIASES if c not in colmap]
     if missing:
         warnings.append(f"파일에 없는 열은 0/빈값으로 채웠습니다: {', '.join(missing)}")
 
