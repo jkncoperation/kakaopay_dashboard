@@ -25,8 +25,9 @@ import streamlit as st
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
-from core.metrics import (BUCKETS, build_creative_table, content_key,  # noqa: E402
-                          parse_pairs, report_text, summarize, unmatched_db)
+from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E402
+                          content_key, parse_pairs, rate, report_text, stage_cell,
+                          summarize, unmatched_db)
 from core.util import today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import ad_sheet, db_sheet  # noqa: E402
@@ -203,6 +204,51 @@ def panel_upload() -> None:
     st.cache_data.clear()
 
 
+# 열이 14개라 화면보다 넓어질 수 있다. Streamlit 표는 넘치면 좌우 스크롤이 생기므로,
+# 긴 세트명이 가로를 다 먹지 않도록 폭만 잡아 준다.
+TABLE_CONFIG = {
+    "광고그룹": st.column_config.TextColumn("광고그룹", width="medium"),
+    "소재": st.column_config.TextColumn("소재", width="small"),
+    "지출": st.column_config.NumberColumn(format="%,d", width="small"),
+    "전환수": st.column_config.NumberColumn(width="small"),
+    "전환단가": st.column_config.TextColumn(width="small"),
+    "진행불가": st.column_config.TextColumn(width="small"),
+    "접수": st.column_config.TextColumn(width="medium"),
+    "미팅": st.column_config.TextColumn(width="medium"),
+    "승인": st.column_config.TextColumn(width="medium"),
+    "CPM": st.column_config.NumberColumn(format="%,d", width="small"),
+    "CTR": st.column_config.TextColumn(width="small"),
+    "제출율": st.column_config.TextColumn(width="small"),
+}
+
+
+def stage_table(g: pd.DataFrame, with_creative: bool = True) -> pd.DataFrame:
+    """화면에 뿌릴 표. 상태 단계는 한 칸에 묶고, 광고 효율 지표는 맨 오른쪽에 붙인다.
+
+    진행불가  건수 / 비율
+    접수·미팅·승인  건수 / 비율 / 영업단가(지출 ÷ 그 단계 건수)
+    CPM · CTR · 제출율  맨 오른쪽
+    """
+    rows = []
+    for _, r in g.iterrows():
+        spend, conv = float(r["지출"]), int(r["전환수"])
+        row = {"광고그룹": r["광고그룹"]}
+        if with_creative:
+            row |= {"소재": r["소재"], "ON/OFF": r["ONOFF"], "상태": r["상태"]}
+        row |= {
+            "지출": spend,
+            "전환수": conv,
+            "전환단가": f"{r['전환단가']:,.0f}" if pd.notna(r["전환단가"]) else "-",
+            "진행불가": stage_cell(r["진행불가"], conv, spend, with_price=False),
+            "접수": stage_cell(r["접수"], conv, spend),
+            "미팅": stage_cell(r["미팅"], conv, spend),
+            "승인": stage_cell(r["승인"], conv, spend),
+            **ad_metrics(spend, float(r["노출"]), float(r["클릭"]), conv),
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 # ================================================================ 화면
 def main() -> None:
     require_setup()
@@ -269,11 +315,11 @@ def main() -> None:
     um = unmatched_db(g, db)
 
     c = st.columns(5)
-    c[0].metric("소진", money(s["소진"]))
+    c[0].metric("지출", money(s["지출"]))
     c[1].metric("총 전환수", f"{s['총전환수']}건")
     c[2].metric("전환단가", money(s["전환단가"]))
     c[3].metric("접수 이상", f"{s['접수이상']}건")
-    c[4].metric("미전환 소재 소진", money(s["미전환소재소진"]))
+    c[4].metric("미전환 소재 지출", money(s["미전환소재지출"]))
     st.caption(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
                f" · 세트 {g['광고그룹'].nunique()}개 · 소재 {len(g)}개" +
                (f" · ⚠ 소재와 매칭 안 된 전환 {len(um)}건" if len(um) else "") +
@@ -282,50 +328,48 @@ def main() -> None:
     tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환", "복사용 리포트"])
 
     with tabs[0]:
-        show = g[["광고그룹", "소재", "ONOFF", "상태", "소진", "전환수", "전환단가",
-                  *BUCKETS, "노출", "클릭"]].rename(columns={"ONOFF": "ON/OFF"})
-        show["전환단가"] = [f"{v:,.0f}" if pd.notna(v) else "-" for v in show["전환단가"]]
-        st.dataframe(show, width="stretch", hide_index=True,
-                     column_config={x: st.column_config.NumberColumn(format="%,d")
-                                    for x in ["소진", "노출", "클릭"]})
+        st.dataframe(stage_table(g), width="stretch", hide_index=True,
+                     column_config=TABLE_CONFIG)
+        st.caption("진행불가는 `건수 / 비율`, 접수·미팅·승인은 `건수 / 비율 / 영업단가` 입니다. "
+                   "비율은 전환수 대비, 영업단가는 지출 ÷ 그 단계 건수. "
+                   "CPM = 지출÷노출×1000 · CTR = 클릭÷노출 · 제출율 = 전환수÷클릭")
 
-        plot = g[g["소진"] > 0].copy()
+        plot = g[g["지출"] > 0].copy()
         if len(plot):
             h = max(200, 24 * len(plot) + 40)
             base = alt.Chart(plot).encode(
                 y=alt.Y("소재:N", sort="-x", title=None, axis=alt.Axis(labelLimit=200)))
             spend = base.mark_bar(color=COLOR_SPEND, cornerRadiusEnd=4, size=13).encode(
-                x=alt.X("소진:Q", title="소진(원)", axis=alt.Axis(format="~s")),
+                x=alt.X("지출:Q", title="지출(원)", axis=alt.Axis(format="~s")),
                 tooltip=[alt.Tooltip("광고그룹:N", title="세트"), alt.Tooltip("소재:N"),
-                         alt.Tooltip("소진:Q", format=","), alt.Tooltip("전환수:Q"),
+                         alt.Tooltip("지출:Q", format=","), alt.Tooltip("전환수:Q"),
                          alt.Tooltip("전환단가:Q", format=",")])
             dbc = base.mark_bar(color=COLOR_DB, cornerRadiusEnd=4, size=13).encode(
                 x=alt.X("전환수:Q", title="전환수(건)"),
                 tooltip=[alt.Tooltip("광고그룹:N", title="세트"), alt.Tooltip("소재:N"),
                          alt.Tooltip("전환수:Q"), alt.Tooltip("전환단가:Q", format=",")])
             cc = st.columns(2)
-            cc[0].altair_chart(spend.properties(title="소재별 소진", height=h)
+            cc[0].altair_chart(spend.properties(title="소재별 지출", height=h)
                                .configure_axis(**GRID).configure_view(strokeWidth=0), width="stretch")
             cc[1].altair_chart(dbc.properties(title="소재별 전환수", height=h)
                                .configure_axis(**GRID).configure_view(strokeWidth=0), width="stretch")
 
     with tabs[1]:
         t = (g.groupby("광고그룹", as_index=False)
-               .agg(소진=("소진", "sum"), 전환수=("전환수", "sum"),
+               .agg(지출=("지출", "sum"), 전환수=("전환수", "sum"),
                     **{b: (b, "sum") for b in BUCKETS},
                     노출=("노출", "sum"), 클릭=("클릭", "sum")))
-        t["전환단가"] = [f"{round(a / b):,}" if b else "-" for a, b in zip(t["소진"], t["전환수"])]
-        t["진행불가율"] = [f"{a/b:.1%}" if b else "-" for a, b in zip(t["진행불가"], t["전환수"])]
-        t["접수율"] = [f"{a/b:.1%}" if b else "-" for a, b in zip(t["접수"], t["전환수"])]
-        st.dataframe(t, width="stretch", hide_index=True,
-                     column_config={x: st.column_config.NumberColumn(format="%,d")
-                                    for x in ["소진", "노출", "클릭"]})
+        t.insert(0, "소재", "")                      # 열 구성을 소재별 표와 맞춘다
+        t["상태"] = t["ONOFF"] = ""
+        t["전환단가"] = [round(a / b) if b else None for a, b in zip(t["지출"], t["전환수"])]
+        st.dataframe(stage_table(t, with_creative=False), width="stretch", hide_index=True,
+                     column_config=TABLE_CONFIG)
 
     with tabs[2]:
         if d0 == d1:
             st.info("기간 모드에서 이틀 이상 선택하면 일별 추이가 나옵니다.")
         else:
-            da = ad.groupby("날짜", as_index=False).agg(소진=("소진비용", "sum"))
+            da = ad.groupby("날짜", as_index=False).agg(지출=("소진비용", "sum"))
             known = set(g["key"].dropna())
             dd = db.copy()
             dd["key"] = dd["utm_content"].map(content_key)
@@ -333,26 +377,26 @@ def main() -> None:
             dbd = (dd.groupby("날짜").size().rename("전환수").reset_index()
                    if len(dd) else pd.DataFrame(columns=["날짜", "전환수"]))
             daily = (da.merge(dbd, on="날짜", how="outer")
-                       .fillna({"소진": 0, "전환수": 0}).sort_values("날짜"))
+                       .fillna({"지출": 0, "전환수": 0}).sort_values("날짜"))
             daily["전환단가"] = [round(a / b) if b else None
-                              for a, b in zip(daily["소진"], daily["전환수"])]
+                              for a, b in zip(daily["지출"], daily["전환수"])]
 
             def line(col, color, title, unit):
                 return (alt.Chart(daily).mark_line(color=color, strokeWidth=2,
                                                    point=alt.OverlayMarkDef(size=70, color=color))
                         .encode(x=alt.X("날짜:T", title=None), y=alt.Y(f"{col}:Q", title=unit),
-                                tooltip=[alt.Tooltip("날짜:T"), alt.Tooltip("소진:Q", format=","),
+                                tooltip=[alt.Tooltip("날짜:T"), alt.Tooltip("지출:Q", format=","),
                                          alt.Tooltip("전환수:Q"),
                                          alt.Tooltip("전환단가:Q", format=",")])
                         .properties(title=title, height=280)
                         .configure_axis(**GRID).configure_view(strokeWidth=0))
 
             cc = st.columns(2)
-            cc[0].altair_chart(line("소진", COLOR_SPEND, "일별 소진", "소진(원)"), width="stretch")
+            cc[0].altair_chart(line("지출", COLOR_SPEND, "일별 지출", "지출(원)"), width="stretch")
             cc[1].altair_chart(line("전환수", COLOR_DB, "일별 전환수", "전환수(건)"), width="stretch")
             st.dataframe(daily, width="stretch", hide_index=True,
                          column_config={x: st.column_config.NumberColumn(format="%,d")
-                                        for x in ["소진", "전환단가"]})
+                                        for x in ["지출", "전환단가"]})
             st.caption("사이드바의 전환수 직접 지정은 기간 단위 보정이라 날짜별로 나눌 수 없어 "
                        "이 탭에는 반영되지 않습니다.")
 

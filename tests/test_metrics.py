@@ -113,9 +113,9 @@ def test_basic_aggregation_and_db_price():
 
     s = summarize(g)
     assert s["총전환수"] == 3
-    assert s["소진"] == 89400
+    assert s["지출"] == 89400
     assert s["전환단가"] == round(89400 / 3)                 # 총소진÷총DB
-    assert s["미전환소재소진"] == 12000
+    assert s["미전환소재지출"] == 12000
 
 
 def test_zero_db_creatives_are_kept():
@@ -152,7 +152,7 @@ def test_test_set_is_excluded():
     g = build_creative_table(ad, pd.DataFrame(columns=["날짜", "utm_source", "utm_campaign",
                                                       "utm_content", "접수", "승인", "구분"]))
     assert "카카오페이_ad1" not in set(g["소재"])
-    assert summarize(g)["소진"] == 1000
+    assert summarize(g)["지출"] == 1000
 
 
 def test_unmatched_db_listed():
@@ -177,7 +177,7 @@ def test_report_text_shape():
     assert "■ 채무조정 세트" in txt
     assert "- 전환수: 1건" in txt
     assert "- 전환단가: 51,000원" in txt
-    assert "- 총 소진: 51,000원" in txt
+    assert "- 총 지출: 51,000원" in txt
     assert "차감" not in txt
 
 
@@ -203,3 +203,36 @@ def test_meeting_counts_in_both_meeting_and_received():
     assert r["접수"] == 2          # 미팅확정 + 접수완료
     assert r["진행불가"] == 1
     assert summarize(g)["접수이상"] == 2
+
+
+# ---------------------------------------------------------------- 표시용 지표
+def test_stage_cell_format():
+    from core.metrics import stage_cell
+    # 건수 / 비율 / 영업단가(지출 ÷ 그 단계 건수)
+    assert stage_cell(3, 20, 600000) == "3 / 15.0% / 200,000"
+    assert stage_cell(1, 8, 100000) == "1 / 12.5% / 100,000"
+    # 진행불가는 단가가 의미 없어 건수/비율만
+    assert stage_cell(5, 20, 600000, with_price=False) == "5 / 25.0%"
+    # 0건은 그냥 0
+    assert stage_cell(0, 20, 600000) == "0"
+    # 전환수가 0이면 비율을 낼 수 없다
+    assert stage_cell(2, 0, 100000) == "2 / - / 50,000"
+
+
+def test_ad_metrics():
+    from core.metrics import ad_metrics
+    m = ad_metrics(spend=378600, impressions=546662, clicks=1262, conversions=18)
+    assert m["CPM"] == round(378600 / 546662 * 1000)          # 693
+    assert m["CTR"] == "0.23%"                                 # 1262/546662, 두 자리
+    assert m["제출율"] == "1.4%"                                # 18/1262
+    zero = ad_metrics(spend=0, impressions=0, clicks=0, conversions=0)
+    assert zero["CPM"] is None and zero["CTR"] == "-" and zero["제출율"] == "-"
+
+
+def test_ctr_keeps_two_digits():
+    """CTR 은 0.2% 대라 소수 한 자리면 0.24% 와 0.21% 를 구분 못 한다."""
+    from core.metrics import ad_metrics
+    a = ad_metrics(spend=1, impressions=100000, clicks=240, conversions=0)
+    b = ad_metrics(spend=1, impressions=100000, clicks=210, conversions=0)
+    assert a["CTR"] == "0.24%" and b["CTR"] == "0.21%"
+    assert a["CTR"] != b["CTR"]

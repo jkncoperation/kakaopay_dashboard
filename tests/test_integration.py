@@ -75,7 +75,7 @@ def test_full_pipeline(data):
 
     s = summarize(g)
     assert s["총전환수"] == 20                                 # ad9-9 1건은 소재 없음
-    assert s["소진"] == 543640
+    assert s["지출"] == 543640
     assert s["전환단가"] == round(543640 / 20)
     assert len(unmatched_db(g, db)) == 1
 
@@ -91,10 +91,10 @@ def test_report_matches_summary(data):
     g = build_creative_table(ad, db)
     s = summarize(g)
     txt = report_text(g, s, D, D)
-    assert f"- 총 소진: {s['소진']:,.0f}원" in txt
+    assert f"- 총 지출: {s['지출']:,.0f}원" in txt
     assert f"- 총 전환수: {s['총전환수']}건" in txt
     assert f"- 전환단가: {s['전환단가']:,}원" in txt
-    assert s["소진"] == 543640
+    assert s["지출"] == 543640
     assert "차감" not in txt
 
 
@@ -107,5 +107,5 @@ def test_period_merges_renamed_sets():
                              _empty_db())
     row = g[g["소재"] == "채무조정_ad6"]
     assert len(row) == 1
-    assert row.iloc[0]["소진"] == 378600 + 437400
+    assert row.iloc[0]["지출"] == 378600 + 437400
     assert row.iloc[0]["광고그룹"] == "채무조정 세트 / 07~24 / 납입금 절감"   # 가장 최근 세트명
