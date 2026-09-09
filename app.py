@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import sys
 from pathlib import Path
 
@@ -47,8 +48,32 @@ def _secret(key: str, default=None):
         return default
 
 
+def on_streamlit_cloud() -> bool:
+    """Streamlit Cloud 위에서 도는가. 저장소가 /mount/src 아래에 마운트된다.
+
+    Secrets 만 보고 판단하면, Secrets 를 안 넣은 클라우드 앱이 자기를 로컬로 착각해
+    수집 버튼을 띄우고 → 클라우드에 없는 크롬을 찾다가 죽는다.
+    """
+    return Path("/mount/src").exists() or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
+
+
 def cloud_mode() -> bool:
-    return bool(_secret("ad_sheet_id"))
+    """시트에서 읽는 모드인가. 클라우드면 무조건, 로컬이면 ad_sheet_id 가 있을 때."""
+    return on_streamlit_cloud() or bool(_secret("ad_sheet_id"))
+
+
+def require_cloud_secrets() -> None:
+    """클라우드인데 Secrets 가 없으면 여기서 멈추고 할 일을 알려 준다."""
+    if not on_streamlit_cloud() or _secret("ad_sheet_id"):
+        return
+    st.title("카카오페이 광고 × 전환(DB) 대시보드")
+    st.error("Secrets 가 설정되지 않았습니다.")
+    st.markdown(
+        "이 앱은 사무실 PC 의 수집기가 올려 둔 **구글 시트**를 읽습니다. "
+        "그러려면 시트 주소와 서비스 계정 키가 필요합니다.\n\n"
+        "**Manage app > Settings > Secrets** 에 `cloud_secrets.txt` 내용을 붙여넣어 주세요. "
+        "최소한 `ad_sheet_id` 와 `[gcp_service_account]` 가 있어야 합니다.")
+    st.stop()
 
 
 SA_REQUIRED = ["type", "project_id", "private_key", "client_email", "token_uri"]
@@ -159,6 +184,9 @@ def panel_ad_live() -> None:
     c2.write("")
     c2.write("")
     if c2.button("광고센터에서 지금 가져오기", type="primary", key="go_live"):
+        if on_streamlit_cloud():
+            st.error("클라우드에서는 수집할 수 없습니다. 카카오 로그인이 필요해 사무실 PC 에서만 돕니다.")
+            return
         with st.spinner("광고센터에서 읽는 중… (첫 실행은 로그인 창이 필요할 수 있습니다)"):
             try:
                 from collect_live import collect
@@ -321,6 +349,9 @@ def gate() -> None:
 
 def refresh_now() -> None:
     """광고(실시간) + 전환(시트) 을 지금 한 번 가져온다. 스케줄러와 같은 경로."""
+    if on_streamlit_cloud():
+        st.error("클라우드에서는 수집할 수 없습니다. 카카오 로그인이 필요해 사무실 PC 에서만 돕니다.")
+        return
     from collect_all import collect_ads, collect_conversions
     msgs = []
     with st.spinner("광고센터와 구글 시트에서 가져오는 중… (20~40초)"):
@@ -333,6 +364,7 @@ def refresh_now() -> None:
 
 
 def main() -> None:
+    require_cloud_secrets()
     gate()
     st.title("카카오페이 광고 × 전환(DB) 대시보드")
 
