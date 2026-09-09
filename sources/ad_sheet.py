@@ -208,3 +208,42 @@ def last_collected_at(sheet_id: str, today_ws: str = TODAY_WORKSHEET,
         return None
     vals = [v for v in df["수집시각"].astype(str) if v.strip()] if len(df) else []
     return max(vals) if vals else None
+
+
+def upsert_upload(df: pd.DataFrame, sheet_id: str, today=None,
+                  today_ws: str = TODAY_WORKSHEET, closed_ws: str = CLOSED_WORKSHEET,
+                  creds_info: dict | None = None, creds_file: str = SA_FILE) -> dict:
+    """사람이 올린 다운로드 파일을 시트에 반영한다.
+
+    push_split 과 다른 점: **올린 파일에 든 날짜만** 건드린다.
+    과거 날짜만 올렸으면 당일 탭은 손대지 않고, 당일만 올렸으면 마감 탭을 손대지 않는다.
+    (push_split 은 로컬 저장소 전체를 기준으로 삼아 당일 탭을 비워 버릴 수 있다)
+    """
+    today = today or dt.date.today()
+    d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
+    if len(d):
+        d["날짜"] = pd.to_datetime(d["날짜"], errors="coerce").dt.date
+        d = d[d["날짜"].notna()]
+    if not len(d):
+        return {"today": 0, "closed": 0, "dates": []}
+
+    cur, past = d[d["날짜"] == today], d[d["날짜"] < today]
+    future = d[d["날짜"] > today]
+    if len(future):                      # 미래 날짜는 마감으로 볼 수 없어 그대로 마감 탭에 둔다
+        past = pd.concat([past, future], ignore_index=True)
+
+    n_today = 0
+    if len(cur):
+        ws = _open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
+        n_today = _write(ws, cur, TODAY_COLUMNS)
+
+    n_closed = 0
+    if len(past):
+        ws = _open(sheet_id, closed_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
+        existing = _read(ws)
+        keep = existing[~existing["날짜"].isin(set(past["날짜"]))] if len(existing) else existing
+        merged = pd.concat([keep, past], ignore_index=True)
+        n_closed = _write(ws, merged, CLOSED_COLUMNS)
+
+    return {"today": n_today, "closed": n_closed,
+            "dates": sorted({str(x) for x in d["날짜"]})}

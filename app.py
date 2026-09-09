@@ -313,6 +313,58 @@ def _save_db(fn) -> None:
 
 
 # ================================================================ 화면
+def panel_upload_to_sheet() -> None:
+    """광고센터 다운로드 파일을 받아 구글 시트에 바로 기록한다 (클라우드용).
+
+    오늘 날짜는 당일 탭을, 지난 날짜는 마감 탭을 갱신한다. 올린 파일에 든 날짜만 건드린다.
+    """
+    st.caption("광고센터 소재 화면 우측 상단 **다운로드** 로 받은 파일(xlsx/csv)을 올리면 "
+               "구글 시트에 바로 반영됩니다. 여러 날짜를 한꺼번에 올려도 됩니다.")
+    files = st.file_uploader("광고센터 파일", type=["xlsx", "xls", "csv"],
+                             accept_multiple_files=True, key="cloud_files")
+    if not files:
+        return
+    fixed = st.date_input("파일명에 날짜가 없을 때 쓸 날짜", value=dt.date.today(),
+                          key="cloud_fixed_date",
+                          help="파일명의 `_20260909_20260909` 를 우선 씁니다.")
+    if not st.button("시트에 올리기", type="primary", key="cloud_upload"):
+        return
+
+    from sources.ad_sheet import upsert_upload
+    frames, msgs = [], []
+    for f in files:
+        try:
+            res = parse_adcenter_file(f, filename=f.name)
+            if res["start"] is None:
+                f.seek(0)
+                res = parse_adcenter_file(f, filename=f.name, date=fixed)
+            frames.append(res["df"])
+            msgs.append(f"읽음: {f.name} -> {res['start']} · {len(res['df'])}행 · "
+                        f"소진 {res['df']['소진비용'].sum():,.0f}원")
+            msgs += [f"   ! {w}" for w in res["warnings"]]
+        except Exception as exc:
+            msgs.append(f"실패: {f.name} - {exc}")
+    if not frames:
+        st.error("읽을 수 있는 파일이 없습니다.")
+        st.code("\n".join(msgs), language=None)
+        return
+
+    df = pd.concat(frames, ignore_index=True)
+    try:
+        r = upsert_upload(df, _secret("ad_sheet_id"),
+                          today_ws=_secret("ad_worksheet_today", "KakaopayToday"),
+                          closed_ws=_secret("ad_worksheet_closed", "KakaopayDaily"),
+                          creds_info=_sa_info())
+    except Exception as exc:
+        st.error(f"시트에 쓰지 못했습니다: {exc}")
+        st.caption("서비스 계정이 시트의 **편집자**로 공유돼 있어야 합니다.")
+        return
+    st.success(f"시트 반영 완료 · 당일 탭 {r['today']}행 / 마감 탭 {r['closed']}행 "
+               f"(날짜 {', '.join(r['dates'])})")
+    st.code("\n".join(msgs), language=None)
+    st.cache_data.clear()
+
+
 def _panel_collect(dates_known: bool) -> None:
     with st.expander("데이터 넣기", expanded=not dates_known):
         t1, t2, t3, t4 = st.tabs(["① 파일 업로드", "② 실시간 수집", "③ 캡처 이미지", "전환(DB) 시트"])
@@ -389,8 +441,8 @@ def main() -> None:
     # 클라우드에는 카카오 로그인도 로컬 저장소도 없어서 수집 패널이 동작하지 않는다.
     # 눌러도 안 되는 버튼을 두는 대신 어디서 수집되는지 알려준다.
     if cloud_mode():
-        st.info("데이터는 사무실 PC 의 수집기가 30분마다 구글 시트에 올리고, 이 화면은 그 시트를 읽습니다. "
-                "이 화면에서는 수집하지 않습니다.")
+        with st.expander("데이터 넣기 (광고센터 다운로드 파일)", expanded=not dates_known):
+            panel_upload_to_sheet()
     else:
         _panel_collect(dates_known)
 
