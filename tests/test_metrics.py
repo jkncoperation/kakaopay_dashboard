@@ -104,17 +104,17 @@ def test_basic_aggregation_and_db_price():
                        db_row("kakaopay_ad1-2", "자산과다")])
     g = build_creative_table(ad, db)
     by = g.set_index("소재")
-    assert by.loc["채무조정_ad6", "DB"] == 2
-    assert by.loc["채무조정_ad6", "DB단가"] == 25500        # 51000 / 2
+    assert by.loc["채무조정_ad6", "전환수"] == 2
+    assert by.loc["채무조정_ad6", "전환단가"] == 25500        # 51000 / 2
     assert by.loc["채무조정_ad6", "승인"] == 1
     assert by.loc["채무조정_ad2", "진행불가"] == 1
-    assert by.loc["채무조정2_ad9", "DB"] == 0
-    assert pd.isna(by.loc["채무조정2_ad9", "DB단가"])       # 0건은 '-' 로 표시
+    assert by.loc["채무조정2_ad9", "전환수"] == 0
+    assert pd.isna(by.loc["채무조정2_ad9", "전환단가"])       # 0건은 '-' 로 표시
 
     s = summarize(g)
-    assert s["총DB"] == 3
-    assert s["최종소진"] == 89400
-    assert s["DB단가"] == round(89400 / 3)                 # 총소진÷총DB
+    assert s["총전환수"] == 3
+    assert s["소진"] == 89400
+    assert s["전환단가"] == round(89400 / 3)                 # 총소진÷총DB
     assert s["미전환소재소진"] == 12000
 
 
@@ -133,27 +133,17 @@ def test_duplicate_key_assigns_db_to_higher_spend():
     db = pd.DataFrame([db_row("kakaopay_ad1-3", "접수완료"),
                        db_row("kakaopay_ad1-3", "접수완료")])
     g = build_creative_table(ad, db).set_index("소재")
-    assert g.loc["채무조정_ad3", "DB"] == 2
-    assert g.loc["카카오페이_ad3", "DB"] == 0
-    assert summarize(build_creative_table(ad, db))["총DB"] == 2   # 중복 계산 금지
-
-
-def test_deduction_applies_to_creative_and_total():
-    ad = pd.DataFrame([ad_row("채무조정_ad2", "세트1", 26400)])
-    db = pd.DataFrame([db_row("kakaopay_ad1-2", "접수완료")])
-    g = build_creative_table(ad, db, deduct={"채무조정_ad2": 6400})
-    assert g.loc[0, "최종소진"] == 20000
-    assert g.loc[0, "DB단가"] == 20000
-    s = summarize(g)
-    assert (s["총소진_차감전"], s["차감"], s["최종소진"]) == (26400, 6400, 20000)
+    assert g.loc["채무조정_ad3", "전환수"] == 2
+    assert g.loc["카카오페이_ad3", "전환수"] == 0
+    assert summarize(build_creative_table(ad, db))["총전환수"] == 2   # 중복 계산 금지
 
 
 def test_db_override_wins_over_sheet():
     ad = pd.DataFrame([ad_row("채무조정_ad6", "세트1", 50000)])
     db = pd.DataFrame([db_row("kakaopay_ad1-6", "접수완료")])
     g = build_creative_table(ad, db, db_override={"채무조정_ad6": 5})
-    assert g.loc[0, "DB"] == 5
-    assert g.loc[0, "DB단가"] == 10000
+    assert g.loc[0, "전환수"] == 5
+    assert g.loc[0, "전환단가"] == 10000
 
 
 def test_test_set_is_excluded():
@@ -162,7 +152,7 @@ def test_test_set_is_excluded():
     g = build_creative_table(ad, pd.DataFrame(columns=["날짜", "utm_source", "utm_campaign",
                                                       "utm_content", "접수", "승인", "구분"]))
     assert "카카오페이_ad1" not in set(g["소재"])
-    assert summarize(g)["최종소진"] == 1000
+    assert summarize(g)["소진"] == 1000
 
 
 def test_unmatched_db_listed():
@@ -183,10 +173,12 @@ def test_report_text_shape():
     db = pd.DataFrame([db_row("kakaopay_ad1-6", "접수완료")])
     g = build_creative_table(ad, db)
     txt = report_text(g, summarize(g), D)
-    assert "[소재별 DB 현황] — 2026-09-09" in txt
+    assert "[소재별 전환 현황] — 2026-09-09" in txt
     assert "■ 채무조정 세트" in txt
-    assert "- DB단가: 51,000원" in txt
-    assert "[합계]" in txt
+    assert "- 전환수: 1건" in txt
+    assert "- 전환단가: 51,000원" in txt
+    assert "- 총 소진: 51,000원" in txt
+    assert "차감" not in txt
 
 
 def test_db_columns_have_no_duplicates():
@@ -206,7 +198,7 @@ def test_meeting_counts_in_both_meeting_and_received():
                        db_row("kakaopay_ad1-6", "자산과다")])
     g = build_creative_table(ad, db)
     r = g.iloc[0]
-    assert r["DB"] == 3
+    assert r["전환수"] == 3
     assert r["미팅"] == 1
     assert r["접수"] == 2          # 미팅확정 + 접수완료
     assert r["진행불가"] == 1

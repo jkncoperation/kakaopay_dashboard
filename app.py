@@ -3,7 +3,7 @@
     streamlit run app.py
 
 광고센터에서 받은 다운로드 파일을 올리면 구글 시트에 기록하고, 그 시트와 전환(DB) 시트를
-소재번호로 맞춰 소재별 소진 · DB · DB단가를 보여 준다.
+소재번호로 맞춰 소재별 소진 · 전환수 · 전환단가를 보여 준다.
 
     다운로드 파일 ─▶ 광고 시트 (당일 탭 / 마감 탭) ─┐
                      전환(DB) 시트 ─────────────────┴─▶ 소재별 집계 · 차트 · 복사용 리포트
@@ -247,11 +247,8 @@ def main() -> None:
 
     with st.sidebar:
         st.header("보정")
-        st.caption("CPC 수정 전 지출 차감 — 한 줄에 `소재명 금액`")
-        deduct = parse_pairs(st.text_area("차감", height=100, label_visibility="collapsed",
-                                          placeholder="채무조정_ad2 26400"))
-        st.caption("DB 건수 직접 지정 — 한 줄에 `소재명 건수` (시트 집계보다 우선)")
-        override = parse_pairs(st.text_area("DB지정", height=80, label_visibility="collapsed",
+        st.caption("전환수 직접 지정 — 한 줄에 `소재명 건수` (시트 집계보다 우선)")
+        override = parse_pairs(st.text_area("전환수지정", height=80, label_visibility="collapsed",
                                             placeholder="채무조정_ad6 12"))
         with_test = st.checkbox("테스트 세트 포함", value=False,
                                 help="'테스트' 가 들어간 광고그룹은 기본적으로 집계에서 뺍니다.")
@@ -263,7 +260,7 @@ def main() -> None:
         st.caption(f"광고 데이터 보유: {dmin} ~ {dmax} ({len(dates)}일)")
 
     ad = ad[ad["광고그룹"].isin(picked)]
-    g = build_creative_table(ad, db, deduct=deduct, db_override=override,
+    g = build_creative_table(ad, db, db_override=override,
                              exclude_groups=() if with_test else ("테스트",))
     if g.empty:
         st.warning("선택한 조건에 해당하는 소재가 없습니다.")
@@ -272,56 +269,54 @@ def main() -> None:
     um = unmatched_db(g, db)
 
     c = st.columns(5)
-    c[0].metric("최종 소진", money(s["최종소진"]),
-                f"-{s['차감']:,.0f}원 차감" if s["차감"] else None, delta_color="off")
-    c[1].metric("총 DB", f"{s['총DB']}건")
-    c[2].metric("최종 DB단가", money(s["DB단가"]))
+    c[0].metric("소진", money(s["소진"]))
+    c[1].metric("총 전환수", f"{s['총전환수']}건")
+    c[2].metric("전환단가", money(s["전환단가"]))
     c[3].metric("접수 이상", f"{s['접수이상']}건")
     c[4].metric("미전환 소재 소진", money(s["미전환소재소진"]))
     st.caption(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
                f" · 세트 {g['광고그룹'].nunique()}개 · 소재 {len(g)}개" +
-               (f" · ⚠ 소재와 매칭 안 된 DB {len(um)}건" if len(um) else "") +
+               (f" · ⚠ 소재와 매칭 안 된 전환 {len(um)}건" if len(um) else "") +
                (" · 이 기간에 들어온 전환 없음" if db.empty else ""))
 
-    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 DB", "복사용 리포트"])
+    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환", "복사용 리포트"])
 
     with tabs[0]:
-        show = g[["광고그룹", "소재", "ONOFF", "상태", "소진", "차감", "최종소진",
-                  "DB", "DB단가", *BUCKETS, "노출", "클릭"]].rename(columns={"ONOFF": "ON/OFF"})
-        show["DB단가"] = [f"{v:,.0f}" if pd.notna(v) else "-" for v in show["DB단가"]]
+        show = g[["광고그룹", "소재", "ONOFF", "상태", "소진", "전환수", "전환단가",
+                  *BUCKETS, "노출", "클릭"]].rename(columns={"ONOFF": "ON/OFF"})
+        show["전환단가"] = [f"{v:,.0f}" if pd.notna(v) else "-" for v in show["전환단가"]]
         st.dataframe(show, width="stretch", hide_index=True,
                      column_config={x: st.column_config.NumberColumn(format="%,d")
-                                    for x in ["소진", "차감", "최종소진", "노출", "클릭"]})
+                                    for x in ["소진", "노출", "클릭"]})
 
-        plot = g[g["최종소진"] > 0].copy()
+        plot = g[g["소진"] > 0].copy()
         if len(plot):
             h = max(200, 24 * len(plot) + 40)
             base = alt.Chart(plot).encode(
                 y=alt.Y("소재:N", sort="-x", title=None, axis=alt.Axis(labelLimit=200)))
             spend = base.mark_bar(color=COLOR_SPEND, cornerRadiusEnd=4, size=13).encode(
-                x=alt.X("최종소진:Q", title="소진(원)", axis=alt.Axis(format="~s")),
+                x=alt.X("소진:Q", title="소진(원)", axis=alt.Axis(format="~s")),
                 tooltip=[alt.Tooltip("광고그룹:N", title="세트"), alt.Tooltip("소재:N"),
-                         alt.Tooltip("최종소진:Q", format=","), alt.Tooltip("DB:Q"),
-                         alt.Tooltip("DB단가:Q", format=",")])
+                         alt.Tooltip("소진:Q", format=","), alt.Tooltip("전환수:Q"),
+                         alt.Tooltip("전환단가:Q", format=",")])
             dbc = base.mark_bar(color=COLOR_DB, cornerRadiusEnd=4, size=13).encode(
-                x=alt.X("DB:Q", title="DB(건)"),
+                x=alt.X("전환수:Q", title="전환수(건)"),
                 tooltip=[alt.Tooltip("광고그룹:N", title="세트"), alt.Tooltip("소재:N"),
-                         alt.Tooltip("DB:Q"), alt.Tooltip("DB단가:Q", format=",")])
+                         alt.Tooltip("전환수:Q"), alt.Tooltip("전환단가:Q", format=",")])
             cc = st.columns(2)
             cc[0].altair_chart(spend.properties(title="소재별 소진", height=h)
                                .configure_axis(**GRID).configure_view(strokeWidth=0), width="stretch")
-            cc[1].altair_chart(dbc.properties(title="소재별 DB", height=h)
+            cc[1].altair_chart(dbc.properties(title="소재별 전환수", height=h)
                                .configure_axis(**GRID).configure_view(strokeWidth=0), width="stretch")
 
     with tabs[1]:
         t = (g.groupby("광고그룹", as_index=False)
-               .agg(소진=("최종소진", "sum"), DB=("DB", "sum"),
+               .agg(소진=("소진", "sum"), 전환수=("전환수", "sum"),
                     **{b: (b, "sum") for b in BUCKETS},
                     노출=("노출", "sum"), 클릭=("클릭", "sum")))
-        t["DB단가"] = [f"{round(a / b):,}" if b else "-" for a, b in zip(t["소진"], t["DB"])]
-        t["진행불가율"] = [f"{a/b:.1%}" if b else "-" for a, b in zip(t["진행불가"], t["DB"])]
-        t["접수율"] = [f"{(x+y+z)/b:.1%}" if b else "-"
-                     for x, y, z, b in zip(t["접수"], t["미팅"], t["승인"], t["DB"])]
+        t["전환단가"] = [f"{round(a / b):,}" if b else "-" for a, b in zip(t["소진"], t["전환수"])]
+        t["진행불가율"] = [f"{a/b:.1%}" if b else "-" for a, b in zip(t["진행불가"], t["전환수"])]
+        t["접수율"] = [f"{a/b:.1%}" if b else "-" for a, b in zip(t["접수"], t["전환수"])]
         st.dataframe(t, width="stretch", hide_index=True,
                      column_config={x: st.column_config.NumberColumn(format="%,d")
                                     for x in ["소진", "노출", "클릭"]})
@@ -335,41 +330,44 @@ def main() -> None:
             dd = db.copy()
             dd["key"] = dd["utm_content"].map(content_key)
             dd = dd[dd["key"].isin(known)]
-            dbd = (dd.groupby("날짜").size().rename("DB").reset_index()
-                   if len(dd) else pd.DataFrame(columns=["날짜", "DB"]))
-            daily = da.merge(dbd, on="날짜", how="outer").fillna({"소진": 0, "DB": 0}).sort_values("날짜")
-            daily["DB단가"] = [round(a / b) if b else None for a, b in zip(daily["소진"], daily["DB"])]
+            dbd = (dd.groupby("날짜").size().rename("전환수").reset_index()
+                   if len(dd) else pd.DataFrame(columns=["날짜", "전환수"]))
+            daily = (da.merge(dbd, on="날짜", how="outer")
+                       .fillna({"소진": 0, "전환수": 0}).sort_values("날짜"))
+            daily["전환단가"] = [round(a / b) if b else None
+                              for a, b in zip(daily["소진"], daily["전환수"])]
 
             def line(col, color, title, unit):
                 return (alt.Chart(daily).mark_line(color=color, strokeWidth=2,
                                                    point=alt.OverlayMarkDef(size=70, color=color))
                         .encode(x=alt.X("날짜:T", title=None), y=alt.Y(f"{col}:Q", title=unit),
                                 tooltip=[alt.Tooltip("날짜:T"), alt.Tooltip("소진:Q", format=","),
-                                         alt.Tooltip("DB:Q"), alt.Tooltip("DB단가:Q", format=",")])
+                                         alt.Tooltip("전환수:Q"),
+                                         alt.Tooltip("전환단가:Q", format=",")])
                         .properties(title=title, height=280)
                         .configure_axis(**GRID).configure_view(strokeWidth=0))
 
             cc = st.columns(2)
             cc[0].altair_chart(line("소진", COLOR_SPEND, "일별 소진", "소진(원)"), width="stretch")
-            cc[1].altair_chart(line("DB", COLOR_DB, "일별 DB", "DB(건)"), width="stretch")
+            cc[1].altair_chart(line("전환수", COLOR_DB, "일별 전환수", "전환수(건)"), width="stretch")
             st.dataframe(daily, width="stretch", hide_index=True,
                          column_config={x: st.column_config.NumberColumn(format="%,d")
-                                        for x in ["소진", "DB단가"]})
-            st.caption("사이드바의 차감·DB 직접 지정은 기간 단위 보정이라 날짜별로 나눌 수 없어 "
+                                        for x in ["소진", "전환단가"]})
+            st.caption("사이드바의 전환수 직접 지정은 기간 단위 보정이라 날짜별로 나눌 수 없어 "
                        "이 탭에는 반영되지 않습니다.")
 
     with tabs[3]:
         if um.empty:
-            st.success("모든 DB가 광고 소재와 매칭되었습니다.")
+            st.success("모든 전환이 광고 소재와 매칭되었습니다.")
         else:
             st.warning(f"{len(um)}건이 현재 소재 목록과 매칭되지 않았습니다. "
-                       "utm_content 오타이거나, 삭제된 소재 또는 선택하지 않은 세트의 DB일 수 있습니다.")
+                       "utm_content 오타이거나, 삭제된 소재 또는 선택하지 않은 세트의 전환일 수 있습니다.")
             st.dataframe(um[["날짜", "utm_campaign", "utm_content", "접수상태", "승인상태", "구분"]],
                          width="stretch", hide_index=True)
 
     with tabs[4]:
         st.caption("아래 내용을 그대로 복사해 채팅에 붙여넣으세요.")
-        st.code(report_text(g, s, d0, d1, deduct), language=None)
+        st.code(report_text(g, s, d0, d1), language=None)
 
 
 if __name__ == "__main__":

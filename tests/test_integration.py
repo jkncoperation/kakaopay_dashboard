@@ -71,30 +71,31 @@ def test_full_pipeline(data):
 
     g = build_creative_table(ad, db)
     assert not any("테스트" in x for x in g["광고그룹"])   # 테스트 세트 제외
-    assert (g["DB"] == 0).any()                            # 미전환 소재도 남는다
+    assert (g["전환수"] == 0).any()                            # 미전환 소재도 남는다
 
     s = summarize(g)
-    assert s["총DB"] == 20                                 # ad9-9 1건은 소재 없음
-    assert s["최종소진"] == 543640
-    assert s["DB단가"] == round(543640 / 20)
+    assert s["총전환수"] == 20                                 # ad9-9 1건은 소재 없음
+    assert s["소진"] == 543640
+    assert s["전환단가"] == round(543640 / 20)
     assert len(unmatched_db(g, db)) == 1
 
     by = g.set_index("소재")
-    assert by.loc["채무조정_ad6", "DB"] == 12
-    assert by.loc["채무조정_ad6", "DB단가"] == round(378600 / 12)
-    assert by.loc["채무조정2_ad2", "DB"] == 4
-    assert by.loc["채무조정3_ad1", "DB"] == 2
+    assert by.loc["채무조정_ad6", "전환수"] == 12
+    assert by.loc["채무조정_ad6", "전환단가"] == round(378600 / 12)
+    assert by.loc["채무조정2_ad2", "전환수"] == 4
+    assert by.loc["채무조정3_ad1", "전환수"] == 2
 
 
 def test_report_matches_summary(data):
     ad, db = data
-    g = build_creative_table(ad, db, deduct={"채무조정_ad6": 8600})
+    g = build_creative_table(ad, db)
     s = summarize(g)
-    txt = report_text(g, s, D, D, {"채무조정_ad6": 8600})
-    assert f"- 최종 소진: {s['최종소진']:,.0f}원" in txt
-    assert f"- 총 DB: {s['총DB']}건" in txt
-    assert "  · 채무조정_ad6: 8,600원" in txt
-    assert s["최종소진"] == 543640 - 8600
+    txt = report_text(g, s, D, D)
+    assert f"- 총 소진: {s['소진']:,.0f}원" in txt
+    assert f"- 총 전환수: {s['총전환수']}건" in txt
+    assert f"- 전환단가: {s['전환단가']:,}원" in txt
+    assert s["소진"] == 543640
+    assert "차감" not in txt
 
 
 def test_period_merges_renamed_sets():
