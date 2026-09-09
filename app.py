@@ -254,6 +254,19 @@ def _save_db(fn) -> None:
 
 
 # ================================================================ 화면
+def _panel_collect(dates_known: bool) -> None:
+    with st.expander("데이터 넣기", expanded=not dates_known):
+        t1, t2, t3, t4 = st.tabs(["① 파일 업로드", "② 실시간 수집", "③ 캡처 이미지", "전환(DB) 시트"])
+        with t1:
+            panel_ad_file()
+        with t2:
+            panel_ad_live()
+        with t3:
+            panel_ad_ocr()
+        with t4:
+            panel_db()
+
+
 def gate() -> None:
     """`.streamlit/secrets.toml` 에 app_password 가 있으면 비밀번호를 받는다.
 
@@ -310,16 +323,14 @@ def main() -> None:
         (st.success if ok else st.error)(m)
 
     dates_known = bool(available_dates())
-    with st.expander("데이터 넣기", expanded=not dates_known):
-        t1, t2, t3, t4 = st.tabs(["① 파일 업로드", "② 실시간 수집", "③ 캡처 이미지", "전환(DB) 시트"])
-        with t1:
-            panel_ad_file()
-        with t2:
-            panel_ad_live()
-        with t3:
-            panel_ad_ocr()
-        with t4:
-            panel_db()
+    # 클라우드에는 카카오 로그인도 로컬 저장소도 없어서 수집 패널이 동작하지 않는다.
+    # 눌러도 안 되는 버튼을 두는 대신 어디서 수집되는지 알려준다.
+    if cloud_mode():
+        st.info("데이터는 사무실 PC 의 수집기가 30분마다 구글 시트에 올리고, 이 화면은 그 시트를 읽습니다. "
+                "이 화면에서는 수집하지 않습니다.")
+    else:
+        _panel_collect(dates_known)
+
 
     dates = available_dates()
     if not dates:
