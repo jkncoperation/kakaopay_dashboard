@@ -1,4 +1,4 @@
-"""카카오페이 광고 × 전환(DB) 대시보드.
+"""카카오페이 대시보드.
 
     streamlit run app.py
 
@@ -31,7 +31,7 @@ from core.util import today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import ad_sheet, db_sheet  # noqa: E402
 
-st.set_page_config(page_title="카카오페이 광고 × DB 대시보드", page_icon="📊", layout="wide")
+st.set_page_config(page_title="카카오페이 대시보드", page_icon="📊", layout="wide")
 
 # 지시서 지정 색. 라이트 배경에서 6개 검사 통과(CVD ΔE 24.7).
 COLOR_SPEND, COLOR_DB = "#2a78d6", "#eb6834"
@@ -104,7 +104,7 @@ def require_setup() -> None:
     """시트 주소가 있어야 시작할 수 있다."""
     if conf("ad_sheet_id"):
         return
-    st.title("카카오페이 광고 × 전환(DB) 대시보드")
+    st.title("카카오페이 대시보드")
     st.error("광고 시트가 연결되지 않았습니다.")
     st.markdown(
         "이 앱은 구글 시트에 기록된 광고·전환 데이터를 읽습니다.\n\n"
@@ -118,7 +118,7 @@ def gate() -> None:
     pw_set = conf("app_password", "")
     if not pw_set or st.session_state.get("auth"):
         return
-    st.title("카카오페이 광고 × 전환(DB) 대시보드")
+    st.title("카카오페이 대시보드")
     pw = st.text_input("비밀번호", type="password")
     if pw and pw == pw_set:
         st.session_state["auth"] = True
@@ -162,7 +162,7 @@ def panel_upload() -> None:
     오늘 날짜는 당일 탭, 지난 날짜는 마감 탭. 올린 파일에 든 날짜만 건드린다.
     """
     st.caption("광고센터 소재 화면 우측 상단 **다운로드** 로 받은 파일(xlsx/csv). "
-               "여러 날짜를 한꺼번에 올려도 되고, 올린 날짜만 갱신됩니다.")
+               "**당일 날짜의 데이터만 올려야 합니다.**")
     files = st.file_uploader("광고센터 파일", type=["xlsx", "xls", "csv"],
                              accept_multiple_files=True, key="files")
     if not files:
@@ -207,10 +207,10 @@ def panel_upload() -> None:
 def main() -> None:
     require_setup()
     gate()
-    st.title("카카오페이 광고 × 전환(DB) 대시보드")
+    st.title("카카오페이 대시보드")
 
     c1, c2 = st.columns([1, 4])
-    if c1.button("시트 다시 읽기", type="primary", help="구글 시트를 다시 읽어 화면을 갱신합니다"):
+    if c1.button("새로고침", type="primary", help="구글 시트를 다시 읽어 화면을 갱신합니다"):
         st.cache_data.clear()
         st.rerun()
     today_df = load_ad(today_kst(), today_kst())
