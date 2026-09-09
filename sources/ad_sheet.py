@@ -6,6 +6,14 @@
     내 PC: collect_all.py -> data/ad_daily.sqlite -> (이 모듈) -> 구글 시트
     클라우드: app.py -> (이 모듈) -> 구글 시트
 
+탭을 둘로 나눈다.
+    KakaopayToday  당일 실시간. 30분마다 통째로 갈아끼운다. 계속 변하는 값.
+    KakaopayDaily  마감된 과거 날짜. 날짜 단위로만 채우고 기존 날짜는 건드리지 않는다.
+
+시트 열은 광고센터 다운로드 파일과 같은 이름·순서를 쓴다(`일자`, `소진비용`, `클릭률` …).
+사람이 다운로드 파일을 그대로 붙여 넣어도 읽히도록 하기 위해서다. 그래서 읽을 때는
+'1,234' 같은 콤마 숫자와 '0.22%' 같은 퍼센트 표기를 모두 받아 준다.
+
 시트에 쓰려면 서비스 계정이 그 시트의 **편집자**여야 한다(읽기만 할 때는 뷰어면 충분).
 """
 from __future__ import annotations
@@ -14,18 +22,23 @@ import datetime as dt
 
 import pandas as pd
 
+from core.util import to_num, to_ratio
 from parsers.adcenter_file import AD_COLUMNS
 from sources.db_sheet import DBSheetError, SA_FILE, service_account_email, service_account_path
 
 WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-DEFAULT_WORKSHEET = "KakaopayRAW"          # 예전 단일 탭 (마이그레이션·폴백용)
 
-# 탭을 둘로 나눈다.
-#   Today  - 당일 실시간. 30분마다 통째로 갈아끼운다. 계속 변하는 값.
-#   Daily  - 마감된 과거 날짜. 날짜 단위로만 채워 넣고 기존 날짜는 건드리지 않는다.
-# 한 탭에 전부 담고 매번 전체 재작성하면, 로컬 저장소가 비었을 때 과거 기록까지 날아간다.
 TODAY_WORKSHEET = "KakaopayToday"
 CLOSED_WORKSHEET = "KakaopayDaily"
+
+# 마감 탭 = 광고센터 다운로드 파일과 같은 열 구성 (날짜 열 이름만 '일자')
+CLOSED_COLUMNS = ["일자", "소재", "ON/OFF", "상태", "광고그룹", "광고상품",
+                  "소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC"]
+# 당일 탭 = 위에 더해 언제·어디서 수집했는지까지 (대시보드가 '수집 시각' 을 보여 준다)
+TODAY_COLUMNS = CLOSED_COLUMNS + ["시작일", "종료일", "출처", "수집시각"]
+
+DATE_HEADERS = ("일자", "날짜")
+NUM_HEADERS = ("소진비용", "노출수", "클릭수", "도달수", "eCPM", "CPC")
 
 
 def _client(creds_info: dict | None, creds_file: str, scopes: list[str]):
@@ -61,9 +74,8 @@ def _open(sheet_id: str, worksheet: str, creds_info, creds_file, scopes, create:
             raise DBSheetError(
                 f"시트에 '{worksheet}' 탭이 없습니다. 수집기를 한 번 돌리면 자동으로 만들어집니다.")
     # 새 탭을 만든 직후에는 구글 쪽 메타데이터가 아직 안 잡혀 바로 쓰면 실패할 때가 있다.
-    # 만든 뒤 이름으로 다시 집어와 확실히 준비된 객체를 쓴다.
     import time
-    sh.add_worksheet(worksheet, rows=2000, cols=max(len(AD_COLUMNS), 26))
+    sh.add_worksheet(worksheet, rows=2000, cols=max(len(TODAY_COLUMNS), 26))
     for _ in range(5):
         time.sleep(1.0)
         try:
@@ -73,94 +85,58 @@ def _open(sheet_id: str, worksheet: str, creds_info, creds_file, scopes, create:
     raise DBSheetError(f"'{worksheet}' 탭을 만들었지만 열지 못했습니다. 다시 실행해 주세요.")
 
 
-def push_ad(df: pd.DataFrame, sheet_id: str, worksheet: str = DEFAULT_WORKSHEET,
-            creds_info: dict | None = None, creds_file: str = SA_FILE) -> int:
-    """로컬에 쌓인 광고 데이터 전체를 시트에 통째로 올린다(기존 내용 대체).
-
-    부분 갱신 대신 전체 교체를 쓰는 이유: 로컬 sqlite 가 항상 정본이고,
-    부분 갱신은 실패 시 시트와 로컬이 어긋난 채 남을 수 있어서다.
-    """
-    ws = _open(sheet_id, worksheet, creds_info, creds_file, WRITE_SCOPES, create=True)
+# ---------------------------------------------------------------- 형식 변환
+def _to_sheet(df: pd.DataFrame, columns: list[str]) -> list[list]:
+    """표준 스키마 -> 시트에 쓸 2차원 값. 숫자는 숫자로 넣어 시트 서식이 살아 있게 한다."""
     d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
     for c in AD_COLUMNS:
         if c not in d:
-            d[c] = ""
-    d = d[AD_COLUMNS]
-    d["날짜"] = d["날짜"].map(
+            d[c] = "" if c not in NUM_HEADERS and c != "클릭률" else 0.0
+    d = d.rename(columns={"날짜": "일자"})
+    d["일자"] = d["일자"].map(
         lambda v: v.isoformat() if isinstance(v, (dt.date, dt.datetime)) else ("" if v is None else str(v)))
-    d = d.sort_values(["날짜", "광고그룹", "소재"])
-    values = [AD_COLUMNS] + d.astype(object).where(pd.notna(d), "").values.tolist()
-    ws.clear()
-    ws.update(values, "A1", value_input_option="USER_ENTERED")
-    return len(d)
+    d = d[columns].sort_values(["일자", "광고그룹", "소재"])
+    return [columns] + d.astype(object).where(pd.notna(d), "").values.tolist()
 
 
-def read_ad(sheet_id: str, worksheet: str = DEFAULT_WORKSHEET,
-            creds_info: dict | None = None, creds_file: str = SA_FILE,
-            start=None, end=None) -> pd.DataFrame:
-    """시트에서 광고 데이터를 읽어 표준 스키마로 돌려준다 (클라우드 대시보드용)."""
-    ws = _open(sheet_id, worksheet, creds_info, creds_file, WRITE_SCOPES)
-    vals = ws.get_all_values()
+def _from_sheet(vals: list[list]) -> pd.DataFrame:
+    """시트의 2차원 값 -> 표준 스키마.
+
+    헤더 이름으로 찾으므로 열 순서가 달라도 되고, 없는 열은 빈값/0 으로 채운다.
+    '1,234' 콤마 숫자와 '0.22%' 퍼센트 표기를 모두 받는다.
+    """
     if not vals or len(vals) < 2:
         return pd.DataFrame(columns=AD_COLUMNS)
-    df = pd.DataFrame(vals[1:], columns=[h.strip() for h in vals[0]])
-    for c in AD_COLUMNS:
-        if c not in df:
-            df[c] = ""
-    df = df[AD_COLUMNS]
-    df["날짜"] = pd.to_datetime(df["날짜"], errors="coerce").dt.date
-    for c in ["소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    df = df[df["날짜"].notna()]
-    if start is not None:
-        df = df[df["날짜"] >= start]
-    if end is not None:
-        df = df[df["날짜"] <= end]
-    return df.reset_index(drop=True)
+    header = [str(h).strip() for h in vals[0]]
+    width = len(header)
+    rows = [(r + [""] * width)[:width] for r in vals[1:]]
+    raw = pd.DataFrame(rows, columns=header)
+
+    out = pd.DataFrame(index=raw.index)
+    date_col = next((h for h in DATE_HEADERS if h in raw.columns), None)
+    out["날짜"] = pd.to_datetime(raw[date_col], errors="coerce").dt.date if date_col else None
+    for c in ["소재", "ON/OFF", "상태", "광고그룹", "광고상품", "시작일", "종료일", "출처", "수집시각"]:
+        out[c] = raw[c].astype(str).str.strip() if c in raw.columns else ""
+    for c in NUM_HEADERS:
+        out[c] = raw[c].map(to_num) if c in raw.columns else 0.0
+    out["클릭률"] = raw["클릭률"].map(to_ratio) if "클릭률" in raw.columns else 0.0
+
+    out = out[out["날짜"].notna() & out["소재"].astype(str).str.strip().ne("")]
+    return out[AD_COLUMNS].reset_index(drop=True)
 
 
-def last_collected_at(sheet_id: str, worksheet: str = DEFAULT_WORKSHEET,
-                      creds_info: dict | None = None, creds_file: str = SA_FILE,
-                      date=None) -> str | None:
-    df = read_ad(sheet_id, worksheet, creds_info, creds_file)
-    if df.empty:
-        return None
-    if date is not None:
-        df = df[df["날짜"] == date]
-    return max(df["수집시각"].astype(str)) if len(df) else None
-
-
-# ---------------------------------------------------------------- 마감/실시간 분리
-def _write(ws, df: pd.DataFrame) -> int:
-    d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
-    for c in AD_COLUMNS:
-        if c not in d:
-            d[c] = ""
-    d = d[AD_COLUMNS]
-    d["날짜"] = d["날짜"].map(
-        lambda v: v.isoformat() if isinstance(v, (dt.date, dt.datetime)) else ("" if v is None else str(v)))
-    d = d.sort_values(["날짜", "광고그룹", "소재"])
-    values = [AD_COLUMNS] + d.astype(object).where(pd.notna(d), "").values.tolist()
+def _write(ws, df: pd.DataFrame, columns: list[str]) -> int:
+    values = _to_sheet(df, columns)
     ws.clear()
     ws.update(values, "A1", value_input_option="USER_ENTERED")
-    return len(d)
+    return len(values) - 1
 
 
 def _read(ws) -> pd.DataFrame:
-    vals = ws.get_all_values()
-    if not vals or len(vals) < 2:
-        return pd.DataFrame(columns=AD_COLUMNS)
-    df = pd.DataFrame(vals[1:], columns=[h.strip() for h in vals[0]])
-    for c in AD_COLUMNS:
-        if c not in df:
-            df[c] = ""
-    df = df[AD_COLUMNS]
-    df["날짜"] = pd.to_datetime(df["날짜"], errors="coerce").dt.date
-    for c in ["소진비용", "노출수", "클릭수", "클릭률", "도달수", "eCPM", "CPC"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    return df[df["날짜"].notna()].reset_index(drop=True)
+    return _from_sheet(ws.get_all_values())
 
 
+# ---------------------------------------------------------------- 쓰기 / 읽기
 def push_split(df: pd.DataFrame, sheet_id: str, today=None,
                today_ws: str = TODAY_WORKSHEET, closed_ws: str = CLOSED_WORKSHEET,
                creds_info: dict | None = None, creds_file: str = SA_FILE) -> dict:
@@ -178,18 +154,18 @@ def push_split(df: pd.DataFrame, sheet_id: str, today=None,
     past = d[d["날짜"] < today] if len(d) else d
 
     ws_today = _open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
-    n_today = _write(ws_today, cur)
+    n_today = _write(ws_today, cur, TODAY_COLUMNS)
 
     ws_closed = _open(sheet_id, closed_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
     existing = _read(ws_closed)
     if len(past):
-        dates = set(past["날짜"])
-        keep = existing[~existing["날짜"].isin(dates)] if len(existing) else existing
+        keep = existing[~existing["날짜"].isin(set(past["날짜"]))] if len(existing) else existing
         merged = pd.concat([keep, past], ignore_index=True)
     else:
         merged = existing
-    merged = merged[merged["날짜"] != today] if len(merged) else merged   # 오늘은 마감 탭에 두지 않는다
-    n_closed = _write(ws_closed, merged)
+    if len(merged):
+        merged = merged[merged["날짜"] != today]       # 오늘은 마감 탭에 두지 않는다
+    n_closed = _write(ws_closed, merged, CLOSED_COLUMNS)
     return {"today": n_today, "closed": n_closed,
             "closed_dates": sorted({str(x) for x in merged["날짜"]}) if len(merged) else []}
 
@@ -199,14 +175,14 @@ def read_split(sheet_id: str, today_ws: str = TODAY_WORKSHEET, closed_ws: str = 
                start=None, end=None) -> pd.DataFrame:
     """두 탭을 합쳐 읽는다. 같은 날짜가 겹치면 실시간 탭을 우선한다."""
     frames = []
-    for name, first in ((today_ws, True), (closed_ws, False)):
+    for name in (today_ws, closed_ws):          # 당일 탭을 먼저 넣어 우선권을 준다
         try:
-            frames.append((_read(_open(sheet_id, name, creds_info, creds_file, WRITE_SCOPES)), first))
+            frames.append(_read(_open(sheet_id, name, creds_info, creds_file, WRITE_SCOPES)))
         except Exception:
-            continue                      # 탭이 아직 없으면 건너뛴다
+            continue                            # 탭이 아직 없으면 건너뛴다
     if not frames:
         return pd.DataFrame(columns=AD_COLUMNS)
-    df = pd.concat([f for f, _ in sorted(frames, key=lambda x: not x[1])], ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
     if df.empty:
         return df
     df = df.drop_duplicates(subset=["날짜", "광고그룹", "소재"], keep="first")
@@ -215,3 +191,14 @@ def read_split(sheet_id: str, today_ws: str = TODAY_WORKSHEET, closed_ws: str = 
     if end is not None:
         df = df[df["날짜"] <= end]
     return df.reset_index(drop=True)
+
+
+def last_collected_at(sheet_id: str, today_ws: str = TODAY_WORKSHEET,
+                      creds_info: dict | None = None, creds_file: str = SA_FILE) -> str | None:
+    """당일 탭의 마지막 수집 시각."""
+    try:
+        df = _read(_open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES))
+    except Exception:
+        return None
+    vals = [v for v in df["수집시각"].astype(str) if v.strip()] if len(df) else []
+    return max(vals) if vals else None
