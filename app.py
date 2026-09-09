@@ -448,7 +448,10 @@ def main() -> None:
     st.caption(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
                f" · 세트 {g['광고그룹'].nunique()}개 · 소재 {len(g)}개" +
                (f" · ⚠ 소재와 매칭 안 된 DB {len(um)}건" if len(um) else "") +
-               (f" · 전환 데이터 없음 — '데이터 넣기 > 전환(DB) 시트' 에서 넣어 주세요" if db.empty else ""))
+               (f" · 이 기간에 들어온 전환 없음"
+                if db.empty and cloud_mode() else
+                (" · 전환 데이터 없음 — '데이터 넣기 > 전환(DB) 시트' 에서 넣어 주세요"
+                 if db.empty else "")))
 
     tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 DB", "복사용 리포트"])
 
