@@ -25,8 +25,7 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
 from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E402
-                          content_key, parse_pairs, stage_cell, summarize,
-                          unmatched_db)
+                          parse_pairs, stage_cell, summarize, unmatched_db)
 from core.util import today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import ad_sheet, db_sheet  # noqa: E402
@@ -200,6 +199,7 @@ def panel_upload() -> None:
 # 열이 14개라 화면보다 넓어질 수 있다. Streamlit 표는 넘치면 좌우 스크롤이 생기므로,
 # 긴 세트명이 가로를 다 먹지 않도록 폭만 잡아 준다.
 TABLE_CONFIG = {
+    "날짜": st.column_config.TextColumn("날짜", width="small"),
     "광고그룹": st.column_config.TextColumn("광고그룹", width="medium"),
     "소재": st.column_config.TextColumn("소재", width="small"),
     "지출": st.column_config.NumberColumn(format="%,d", width="small"),
@@ -216,30 +216,59 @@ TABLE_CONFIG = {
 }
 
 
-def stage_table(g: pd.DataFrame, with_creative: bool = True) -> pd.DataFrame:
-    """화면에 뿌릴 표. 상태 단계는 한 칸에 묶고, 광고 효율 지표는 맨 오른쪽에 붙인다.
+SUM_COLS = ["지출", "전환수", "노출", "클릭", *BUCKETS]
+
+
+def totals(g: pd.DataFrame) -> dict:
+    """소재별 표를 한 줄로 합친 값. 세트별·일별·합계행이 모두 이걸 쓴다."""
+    return {c: (float(g[c].sum()) if len(g) else 0.0) for c in SUM_COLS}
+
+
+def stage_row(head: dict, v: dict) -> dict:
+    """앞쪽 이름칸(head) + 공통 지표. 어느 표든 열 구성이 같아진다.
 
     진행불가  건수 / 비율
     접수·미팅·승인  건수 / 비율 / 영업단가(지출 ÷ 그 단계 건수)
-    CPM · CTR · 제출율  맨 오른쪽
+    CPM · CTR · CPC · 제출율  맨 오른쪽
     """
-    rows = []
-    for _, r in g.iterrows():
-        spend, conv = float(r["지출"]), int(r["전환수"])
-        row = {"광고그룹": r["광고그룹"]}
-        if with_creative:
-            row |= {"소재": r["소재"], "ON/OFF": r["ONOFF"], "상태": r["상태"]}
-        row |= {
+    spend, conv = float(v["지출"]), int(v["전환수"])
+    return {**head,
             "지출": spend,
             "전환수": conv,
-            "전환단가": f"{r['전환단가']:,.0f}" if pd.notna(r["전환단가"]) else "-",
-            "진행불가": stage_cell(r["진행불가"], conv, spend, with_price=False),
-            "접수": stage_cell(r["접수"], conv, spend),
-            "미팅": stage_cell(r["미팅"], conv, spend),
-            "승인": stage_cell(r["승인"], conv, spend),
-            **ad_metrics(spend, float(r["노출"]), float(r["클릭"]), conv),
-        }
-        rows.append(row)
+            "전환단가": f"{round(spend / conv):,}" if conv else "-",
+            "진행불가": stage_cell(v["진행불가"], conv, spend, with_price=False),
+            "접수": stage_cell(v["접수"], conv, spend),
+            "미팅": stage_cell(v["미팅"], conv, spend),
+            "승인": stage_cell(v["승인"], conv, spend),
+            **ad_metrics(spend, float(v["노출"]), float(v["클릭"]), conv)}
+
+
+def creative_table(g: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame([
+        stage_row({"광고그룹": r["광고그룹"], "소재": r["소재"],
+                   "ON/OFF": r["ONOFF"], "상태": r["상태"]}, r)
+        for _, r in g.iterrows()])
+
+
+def group_table(g: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame([
+        stage_row({"광고그룹": name}, totals(part))
+        for name, part in g.groupby("광고그룹", sort=False)])
+
+
+def daily_table(ad: pd.DataFrame, db: pd.DataFrame, override: dict,
+                exclude) -> pd.DataFrame:
+    """날짜별로 같은 집계를 돌리고 맨 아래에 합계 한 줄을 붙인다."""
+    rows, acc = [], {c: 0.0 for c in SUM_COLS}
+    for d in sorted({x for x in ad["날짜"] if pd.notna(x)}):
+        gd = build_creative_table(ad[ad["날짜"] == d], db[db["날짜"] == d],
+                                  db_override=override, exclude_groups=exclude)
+        v = totals(gd)
+        rows.append(stage_row({"날짜": str(d)}, v))
+        for c in SUM_COLS:
+            acc[c] += v[c]
+    if rows:
+        rows.append(stage_row({"날짜": "합계"}, acc))
     return pd.DataFrame(rows)
 
 
@@ -322,44 +351,25 @@ def main() -> None:
     tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환"])
 
     with tabs[0]:
-        st.dataframe(stage_table(g), width="stretch", hide_index=True,
+        st.dataframe(creative_table(g), width="stretch", hide_index=True,
                      column_config=TABLE_CONFIG)
         st.caption("진행불가는 `건수 / 비율`, 접수·미팅·승인은 `건수 / 비율 / 영업단가` 입니다. "
                    "비율은 전환수 대비, 영업단가는 지출 ÷ 그 단계 건수. "
                    "CPM = 지출÷노출×1000 · CTR = 클릭÷노출 · CPC = 지출÷클릭 · 제출율 = 전환수÷클릭")
 
     with tabs[1]:
-        t = (g.groupby("광고그룹", as_index=False)
-               .agg(지출=("지출", "sum"), 전환수=("전환수", "sum"),
-                    **{b: (b, "sum") for b in BUCKETS},
-                    노출=("노출", "sum"), 클릭=("클릭", "sum")))
-        t.insert(0, "소재", "")                      # 열 구성을 소재별 표와 맞춘다
-        t["상태"] = t["ONOFF"] = ""
-        t["전환단가"] = [round(a / b) if b else None for a, b in zip(t["지출"], t["전환수"])]
-        st.dataframe(stage_table(t, with_creative=False), width="stretch", hide_index=True,
+        st.dataframe(group_table(g), width="stretch", hide_index=True,
                      column_config=TABLE_CONFIG)
 
     with tabs[2]:
         if d0 == d1:
             st.info("기간 모드에서 이틀 이상 선택하면 일별 추이가 나옵니다.")
         else:
-            da = ad.groupby("날짜", as_index=False).agg(지출=("소진비용", "sum"))
-            known = set(g["key"].dropna())
-            dd = db.copy()
-            dd["key"] = dd["utm_content"].map(content_key)
-            dd = dd[dd["key"].isin(known)]
-            dbd = (dd.groupby("날짜").size().rename("전환수").reset_index()
-                   if len(dd) else pd.DataFrame(columns=["날짜", "전환수"]))
-            daily = (da.merge(dbd, on="날짜", how="outer")
-                       .fillna({"지출": 0, "전환수": 0}).sort_values("날짜"))
-            daily["전환단가"] = [round(a / b) if b else None
-                              for a, b in zip(daily["지출"], daily["전환수"])]
-
-            st.dataframe(daily, width="stretch", hide_index=True,
-                         column_config={x: st.column_config.NumberColumn(format="%,d")
-                                        for x in ["지출", "전환단가"]})
-            st.caption("사이드바의 전환수 직접 지정은 기간 단위 보정이라 날짜별로 나눌 수 없어 "
-                       "이 탭에는 반영되지 않습니다.")
+            st.dataframe(daily_table(ad, db, override,
+                                     () if with_test else ("테스트",)),
+                         width="stretch", hide_index=True, column_config=TABLE_CONFIG)
+            st.caption("맨 아래 **합계** 는 기간 전체를 합친 값입니다. "
+                       "사이드바의 전환수 직접 지정은 날짜마다 그대로 적용됩니다.")
 
     with tabs[3]:
         if um.empty:
