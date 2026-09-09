@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.metrics import (build_creative_table, content_key, creative_key,  # noqa: E402
                           parse_pairs, report_text, summarize, unmatched_db)
-from sources.db_sheet import status_bucket  # noqa: E402
+from sources.db_sheet import status_bucket, status_flags  # noqa: E402
 
 D = dt.date(2026, 9, 9)
 
@@ -23,9 +23,9 @@ def ad_row(소재, 광고그룹, 소진, 클릭=0, 상태="진행중", onoff="ON
 
 
 def db_row(content, 접수="", 승인=""):
-    from sources.db_sheet import status_bucket as sb
     return {"날짜": D, "utm_source": "kakaopay", "utm_campaign": "kakaopay_adset",
-            "utm_content": content, "접수": 접수, "승인": 승인, "구분": sb(접수, 승인)}
+            "utm_content": content, "접수상태": 접수, "승인상태": 승인,
+            "구분": status_bucket(접수, 승인), **status_flags(접수, 승인)}
 
 
 # ---------------------------------------------------------------- 키 매칭
@@ -65,16 +65,33 @@ def test_creative_and_content_keys_agree():
 @pytest.mark.parametrize("접수,승인,expected", [
     ("자산과다", "", "진행불가"),
     ("소득 증빙 불가", "", "진행불가"),      # 공백 제거 후 비교
+    ("장기 연체", "", "진행불가"),
     ("접수완료", "", "접수"),
     ("미팅보류", "", "접수"),
     ("미팅확정", "", "미팅"),
+    ("미팅 확정v2", "", "미팅"),
+    ("미팅 확정v3", "", "미팅"),
     ("접수완료", "승인예정", "승인"),        # 승인 열이 최우선
     ("미팅확정", "승인완료", "승인"),
     ("", "", "미분류"),
     ("기타메모", "", "미분류"),
 ])
 def test_status_bucket(접수, 승인, expected):
+    """표시용 라벨 - 뒷단계가 우선"""
     assert status_bucket(접수, 승인) == expected
+
+
+@pytest.mark.parametrize("접수,승인,expected", [
+    # 미팅확정은 접수에도 포함된다 (깔때기: 뒷단계는 앞단계를 포함)
+    ("미팅확정", "", {"진행불가": 0, "접수": 1, "미팅": 1, "승인": 0}),
+    ("미팅 확정v2", "", {"진행불가": 0, "접수": 1, "미팅": 1, "승인": 0}),
+    ("미팅 확정v3", "승인완료", {"진행불가": 0, "접수": 1, "미팅": 1, "승인": 1}),
+    ("접수완료", "", {"진행불가": 0, "접수": 1, "미팅": 0, "승인": 0}),
+    ("장기 연체", "", {"진행불가": 1, "접수": 0, "미팅": 0, "승인": 0}),
+    ("", "", {"진행불가": 0, "접수": 0, "미팅": 0, "승인": 0}),
+])
+def test_status_flags_are_cumulative(접수, 승인, expected):
+    assert status_flags(접수, 승인) == expected
 
 
 # ---------------------------------------------------------------- 집계
@@ -170,3 +187,27 @@ def test_report_text_shape():
     assert "■ 채무조정 세트" in txt
     assert "- DB단가: 51,000원" in txt
     assert "[합계]" in txt
+
+
+def test_db_columns_have_no_duplicates():
+    """원본 상태값과 집계 플래그가 같은 이름을 쓰면 열이 조용히 덮어써진다."""
+    from sources.db_sheet import BUCKETS, DB_COLUMNS
+    assert len(DB_COLUMNS) == len(set(DB_COLUMNS)), f"중복 열: {DB_COLUMNS}"
+    assert "접수상태" in DB_COLUMNS and "승인상태" in DB_COLUMNS
+    for b in BUCKETS:
+        assert b in DB_COLUMNS
+
+
+def test_meeting_counts_in_both_meeting_and_received():
+    """미팅확정 1건은 미팅에도, 접수에도 잡혀야 한다."""
+    ad = pd.DataFrame([ad_row("채무조정_ad6", "세트1", 50000)])
+    db = pd.DataFrame([db_row("kakaopay_ad1-6", "미팅 확정v2"),
+                       db_row("kakaopay_ad1-6", "접수완료"),
+                       db_row("kakaopay_ad1-6", "자산과다")])
+    g = build_creative_table(ad, db)
+    r = g.iloc[0]
+    assert r["DB"] == 3
+    assert r["미팅"] == 1
+    assert r["접수"] == 2          # 미팅확정 + 접수완료
+    assert r["진행불가"] == 1
+    assert summarize(g)["접수이상"] == 2

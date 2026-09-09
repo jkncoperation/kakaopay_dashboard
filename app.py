@@ -364,7 +364,7 @@ def main() -> None:
         else:
             st.warning(f"{len(um)}건이 현재 소재 목록과 매칭되지 않았습니다. "
                        "utm_content 오타이거나, 삭제된 소재 또는 선택하지 않은 세트의 DB일 수 있습니다.")
-            st.dataframe(um[["날짜", "utm_campaign", "utm_content", "접수", "승인", "구분"]],
+            st.dataframe(um[["날짜", "utm_campaign", "utm_content", "접수상태", "승인상태", "구분"]],
                          width="stretch", hide_index=True)
 
     with tabs[4]:

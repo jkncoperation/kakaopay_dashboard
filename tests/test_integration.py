@@ -12,7 +12,11 @@ sys.path.insert(0, str(ROOT))
 from core.metrics import build_creative_table, report_text, summarize, unmatched_db  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources.ad_sheet import CLOSED_COLUMNS, _from_sheet, _to_sheet  # noqa: E402
-from sources.db_sheet import DBSheetError, _normalize  # noqa: E402
+from sources.db_sheet import DB_COLUMNS, DBSheetError, _normalize  # noqa: E402
+
+
+def _empty_db():
+    return pd.DataFrame(columns=DB_COLUMNS)
 
 SAMPLE = ROOT / "samples" / "(카카오페이)법무법인 평온_소재_20260909_20260909.xlsx"
 D = dt.date(2026, 9, 9)
@@ -99,8 +103,7 @@ def test_period_merges_renamed_sets():
     a1 = parse_adcenter_file(str(SAMPLE), filename=SAMPLE.name)["df"]
     a2 = parse_adcenter_file(str(s0906), filename=s0906.name)["df"]
     g = build_creative_table(pd.concat([a1, a2], ignore_index=True),
-                             pd.DataFrame(columns=["날짜", "utm_source", "utm_campaign",
-                                                   "utm_content", "접수", "승인", "구분"]))
+                             _empty_db())
     row = g[g["소재"] == "채무조정_ad6"]
     assert len(row) == 1
     assert row.iloc[0]["소진"] == 378600 + 437400

@@ -18,33 +18,48 @@ DEFAULT_SHEET_ID = "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4"
 DEFAULT_GID = "0"
 
 # 1-C. 상태 분류 정규식 - 기존 보고서 시트와 동일
-RX_NOGO = re.compile(r"접수불가|채무미비|자산과다|소득미비|소득증빙불가|면책5년미만|DTI100%미만|채무조정중")
+# 비교 전에 공백을 모두 지우므로 '미팅 확정' 도 '미팅확정' 으로 걸린다.
+# 부분 일치라 '미팅확정v2', '미팅확정v3' 처럼 뒤에 뭐가 붙어도 잡힌다.
+RX_NOGO = re.compile(r"접수불가|채무미비|자산과다|소득미비|소득증빙불가|면책5년미만|DTI100%미만|채무조정중|장기연체")
 RX_RECV = re.compile(r"접수완료|담보접수|법인파산접수|미팅보류|협의중|관리")
 RX_MEET = re.compile(r"미팅확정")
 RX_APPR = re.compile(r"승인예정|승인완료")
 
-DB_COLUMNS = ["날짜", "utm_source", "utm_campaign", "utm_content", "접수", "승인", "구분"]
+BUCKETS = ["진행불가", "접수", "미팅", "승인"]
+# 시트 원본 값은 '접수상태'/'승인상태' 로 담는다. 집계 플래그가 '접수'/'승인' 이라
+# 같은 이름을 쓰면 열이 중복돼 조용히 덮어써진다.
+DB_COLUMNS = ["날짜", "utm_source", "utm_campaign", "utm_content",
+              "접수상태", "승인상태", "구분", *BUCKETS]
 
 
 class DBSheetError(Exception):
     pass
 
 
-def status_bucket(접수: str, 승인: str = "") -> str:
-    """진행불가 / 접수 / 미팅 / 승인 / 미분류.
+def status_flags(접수: str, 승인: str = "") -> dict[str, int]:
+    """구분별로 해당하는지 (0/1). 한 건이 여러 구분에 들어갈 수 있다.
 
-    승인은 '승인' 열에서, 나머지는 '접수' 열에서 본다(지시서 1-C).
+    깔때기라서 뒷단계는 앞단계를 포함한다 - 미팅확정된 건은 접수도 된 것으로 센다.
+    그래서 접수 >= 미팅 이 된다. 승인은 '승인' 열, 나머지는 '접수' 열에서 본다.
     """
     a = str(접수 or "").replace(" ", "")
     b = str(승인 or "").replace(" ", "")
-    if RX_APPR.search(b):
-        return "승인"
-    if RX_MEET.search(a):
-        return "미팅"
-    if RX_RECV.search(a):
-        return "접수"
-    if RX_NOGO.search(a):
-        return "진행불가"
+    meet = bool(RX_MEET.search(a))
+    return {"진행불가": int(bool(RX_NOGO.search(a))),
+            "접수": int(bool(RX_RECV.search(a)) or meet),
+            "미팅": int(meet),
+            "승인": int(bool(RX_APPR.search(b)))}
+
+
+def status_bucket(접수: str, 승인: str = "") -> str:
+    """그 건을 한마디로 부르면 무엇인가 (목록에 보여 줄 이름).
+
+    집계는 status_flags 로 하고, 이건 표시용 라벨이다. 뒷단계가 우선.
+    """
+    f = status_flags(접수, 승인)
+    for name in ("승인", "미팅", "접수", "진행불가"):
+        if f[name]:
+            return name
     return "미분류"
 
 
@@ -181,10 +196,14 @@ def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
     out["utm_campaign"] = raw[_pick(cols, "utm_campaign")].astype(str).str.strip() \
         if _pick(cols, "utm_campaign") else ""
     out["utm_content"] = raw[c_content].astype(str).str.strip()
-    out["접수"] = raw[_pick(cols, "접수")].astype(str) if _pick(cols, "접수") else ""
-    out["승인"] = raw[_pick(cols, "승인")].astype(str) if _pick(cols, "승인") else ""
+    out["접수상태"] = raw[_pick(cols, "접수")].astype(str) if _pick(cols, "접수") else ""
+    out["승인상태"] = raw[_pick(cols, "승인")].astype(str) if _pick(cols, "승인") else ""
     out["날짜"] = raw[c_time].map(parse_any_date) if c_time else None
 
     out = out[out["utm_source"].str.lower() == "kakaopay"].copy()
-    out["구분"] = [status_bucket(a, b) for a, b in zip(out["접수"], out["승인"])]
+    pairs = list(zip(out["접수상태"], out["승인상태"]))
+    out["구분"] = [status_bucket(a, b) for a, b in pairs]
+    flags = [status_flags(a, b) for a, b in pairs]
+    for b in BUCKETS:
+        out[b] = [f[b] for f in flags]
     return out[DB_COLUMNS].reset_index(drop=True)

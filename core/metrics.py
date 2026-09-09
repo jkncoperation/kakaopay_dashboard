@@ -75,11 +75,14 @@ def build_creative_table(ad: pd.DataFrame, db: pd.DataFrame,
     d["key"] = d["utm_content"].map(content_key)
     matched = d.dropna(subset=["key"])
     cnt = matched.groupby("key").size().to_dict()
-    per_bucket = matched.groupby(["key", "구분"]).size().to_dict()
+    # 구분은 배타가 아니다(미팅확정은 접수에도 포함). 그래서 라벨로 세지 않고
+    # 각 구분의 0/1 플래그를 더한다.
+    sums = {b: (matched.groupby("key")[b].sum().to_dict() if b in matched else {})
+            for b in BUCKETS}
 
     g["DB"] = g["key"].map(lambda k: int(cnt.get(k, 0)))
     for b in BUCKETS:
-        g[b] = g["key"].map(lambda k, b=b: int(per_bucket.get((k, b), 0)))
+        g[b] = g["key"].map(lambda k, b=b: int(sums[b].get(k, 0)))
 
     # 같은 (세트, 번호) 소재가 둘 이상이면 소진이 큰 쪽에만 DB 배정
     if len(g):
@@ -113,7 +116,8 @@ def summarize(g: pd.DataFrame, deduct: dict[str, float] | None = None) -> dict:
         "총DB": total_db,
         "DB단가": round(spend / total_db) if total_db else None,
         "미전환소재소진": float(g.loc[g["DB"] == 0, "최종소진"].sum()) if len(g) else 0.0,
-        "접수이상": int(g[["접수", "미팅", "승인"]].sum().sum()) if len(g) else 0,
+        # 접수가 이미 미팅확정을 포함하므로 그대로가 '접수 이상' 이다
+        "접수이상": int(g["접수"].sum()) if len(g) else 0,
         "클릭": float(g["클릭"].sum()) if len(g) else 0.0,
     }
 
