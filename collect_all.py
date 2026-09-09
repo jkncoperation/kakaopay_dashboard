@@ -48,8 +48,12 @@ def collect_conversions() -> tuple[bool, str]:
         return False, f"전환: 실패 - {str(exc).splitlines()[0]}"
 
 
-def push_to_sheet() -> tuple[bool, str]:
+def push_to_sheet(include_past: bool = False) -> tuple[bool, str]:
     """클라우드 대시보드가 읽을 수 있도록 광고 데이터를 구글 시트로 올린다.
+
+    기본은 **당일 탭만** 갱신한다. 마감 탭은 사람이 다운로드 파일 기준으로 직접 관리하는
+    곳이라 30분마다 도는 수집기가 덮어쓰면 안 된다.
+    과거 날짜까지 올리려면 `python collect_all.py --push-past`.
 
     config.json 의 ad_sheet_id 가 비어 있으면(로컬 전용) 아무것도 하지 않는다.
     """
@@ -61,21 +65,24 @@ def push_to_sheet() -> tuple[bool, str]:
         from sources.ad_sheet import push_split
         r = push_split(load_ad(), sheet_id,
                        today_ws=cfg.get("ad_worksheet_today", "KakaopayToday"),
-                       closed_ws=cfg.get("ad_worksheet_closed", "KakaopayDaily"))
+                       closed_ws=cfg.get("ad_worksheet_closed", "KakaopayDaily"),
+                       include_past=include_past)
+        if r["closed"] is None:
+            return True, f"시트 업로드: 당일 {r['today']}행 (마감 탭은 그대로 둠)"
         return True, (f"시트 업로드: 당일 {r['today']}행 / 마감 {r['closed']}행"
                       f" ({len(r['closed_dates'])}일치)")
     except Exception as exc:
         return False, f"시트 업로드: 실패 - {str(exc).splitlines()[0]}"
 
 
-def run(days: list[str]) -> int:
+def run(days: list[str], push_past: bool = False) -> int:
     stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"===== {stamp} 수집 시작 ({', '.join(days)}) =====")
     ok_ad, msg_ad = collect_ads(days)
     print(" ", msg_ad)
     ok_db, msg_db = collect_conversions()
     print(" ", msg_db)
-    ok_up, msg_up = push_to_sheet()
+    ok_up, msg_up = push_to_sheet(include_past=push_past)
     print(" ", msg_up)
     oks = [ok_ad, ok_db, ok_up]
     both = "성공" if all(oks) else ("부분 성공" if any(oks) else "실패")
@@ -87,6 +94,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", help="하루만 (YYYY-MM-DD)")
     ap.add_argument("--days", type=int, default=1, help="오늘 포함 최근 N일 (기본 1)")
+    ap.add_argument("--push-past", action="store_true",
+                    help="로컬의 과거 날짜도 마감 탭에 올린다 (평소에는 마감 탭을 건드리지 않음)")
     args = ap.parse_args()
 
     if args.date:
@@ -94,7 +103,7 @@ def main() -> int:
     else:
         today = dt.date.today()
         days = [(today - dt.timedelta(d)).isoformat() for d in range(args.days - 1, -1, -1)]
-    return run(days)
+    return run(days, push_past=args.push_past)
 
 
 if __name__ == "__main__":

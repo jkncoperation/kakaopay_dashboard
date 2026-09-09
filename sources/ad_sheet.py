@@ -139,10 +139,13 @@ def _read(ws) -> pd.DataFrame:
 # ---------------------------------------------------------------- 쓰기 / 읽기
 def push_split(df: pd.DataFrame, sheet_id: str, today=None,
                today_ws: str = TODAY_WORKSHEET, closed_ws: str = CLOSED_WORKSHEET,
-               creds_info: dict | None = None, creds_file: str = SA_FILE) -> dict:
-    """당일은 실시간 탭에 통째로, 마감된 날짜는 마감 탭에 날짜 단위로 채워 넣는다.
+               creds_info: dict | None = None, creds_file: str = SA_FILE,
+               include_past: bool = False) -> dict:
+    """당일 탭을 갈아끼운다. include_past=True 일 때만 마감 탭도 손댄다.
 
-    마감 탭은 '해당 날짜의 행만' 갈아끼우므로, 로컬에 없는 예전 날짜는 시트에 그대로 남는다.
+    마감 탭은 사람이 다운로드 파일 기준으로 직접 관리하는 곳이라, 30분마다 도는 수집기가
+    멋대로 덮어쓰면 안 된다. 그래서 기본값은 '당일 탭만'. 과거 날짜를 로컬에서 올리고
+    싶을 때만 include_past=True 로 명시한다(그때도 해당 날짜의 행만 갈아끼운다).
     """
     today = today or dt.date.today()
     d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
@@ -155,6 +158,9 @@ def push_split(df: pd.DataFrame, sheet_id: str, today=None,
 
     ws_today = _open(sheet_id, today_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
     n_today = _write(ws_today, cur, TODAY_COLUMNS)
+
+    if not include_past:
+        return {"today": n_today, "closed": None, "closed_dates": []}
 
     ws_closed = _open(sheet_id, closed_ws, creds_info, creds_file, WRITE_SCOPES, create=True)
     existing = _read(ws_closed)
