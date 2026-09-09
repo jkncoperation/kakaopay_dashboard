@@ -51,11 +51,40 @@ def cloud_mode() -> bool:
     return bool(_secret("ad_sheet_id"))
 
 
+SA_REQUIRED = ["type", "project_id", "private_key", "client_email", "token_uri"]
+
+
 def _sa_info():
+    """secrets 의 서비스 계정 정보. 빠진 항목이 있으면 무엇이 빠졌는지 알려준다.
+
+    구글 라이브러리는 'MalformedError' 라고만 해서 원인을 알 수 없다.
+    Secrets 를 부분만 붙여넣는 실수가 잦아 여기서 먼저 걸러 낸다.
+    """
     try:
-        return dict(st.secrets["gcp_service_account"]) if "gcp_service_account" in st.secrets else None
+        if "gcp_service_account" not in st.secrets:
+            return None
+        info = dict(st.secrets["gcp_service_account"])
     except Exception:
         return None
+
+    missing = [k for k in SA_REQUIRED if not str(info.get(k, "")).strip()]
+    truncated = [k for k in ("private_key", "private_key_id", "client_id")
+                 if str(info.get(k, "")).strip() in ("...", "…")]
+    if not missing and "BEGIN PRIVATE KEY" not in str(info.get("private_key", "")):
+        truncated.append("private_key")
+    if missing or truncated:
+        st.error("Secrets 의 `[gcp_service_account]` 가 온전하지 않습니다.")
+        if missing:
+            st.write("빠진 항목: " + ", ".join(f"`{k}`" for k in missing))
+        if truncated:
+            st.write("값이 잘린 항목: " + ", ".join(f"`{k}`" for k in set(truncated)))
+        st.info(
+            "**`cloud_secrets.txt` 파일 전체**를 복사해 붙여넣어 주세요. "
+            "화면에 보이는 요약본이 아니라 실제 파일이어야 합니다 "
+            "(`private_key` 는 `-----BEGIN PRIVATE KEY-----` 로 시작하는 1,700자 정도의 긴 값입니다).\n\n"
+            "Manage app > Settings > Secrets 에서 수정한 뒤 저장하면 앱이 다시 시작됩니다.")
+        st.stop()
+    return info
 
 
 @st.cache_data(ttl=120, show_spinner="시트에서 불러오는 중…")
