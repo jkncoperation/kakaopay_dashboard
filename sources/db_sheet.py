@@ -1,10 +1,7 @@
-"""전환(DB) 시트 읽기 - 세 가지 경로를 우선순위대로.
+"""전환(DB) 시트 읽기 - 서비스 계정.
 
-1) 공개 CSV  : 시트가 '링크가 있는 모든 사용자 보기'면 설정 없이 바로 읽힘
-2) 파일 업로드: 시트를 xlsx/csv 로 내려받아 넣기 (현재 기본 경로)
-3) 서비스 계정: gspread 자동화 (마지막 수단)
-
-`probe_public_csv()` 로 1)이 되는지 먼저 판별할 수 있다.
+시트가 비공개(개인정보가 들어 있어 공개하면 안 된다)라 서비스 계정으로만 읽는다.
+필요한 것: Google Sheets API 사용 설정 + 시트를 서비스 계정 이메일에 뷰어 공유.
 """
 from __future__ import annotations
 
@@ -51,58 +48,6 @@ def status_bucket(접수: str, 승인: str = "") -> str:
     return "미분류"
 
 
-def public_csv_url(sheet_id: str = DEFAULT_SHEET_ID, gid: str = DEFAULT_GID) -> str:
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-
-
-def probe_public_csv(sheet_id: str = DEFAULT_SHEET_ID, gid: str = DEFAULT_GID,
-                     timeout: int = 10) -> tuple[bool, str]:
-    """공개 CSV 로 읽히는지 확인. (가능여부, 설명)"""
-    try:
-        import requests
-    except ImportError:
-        return False, "requests 패키지가 없습니다."
-    try:
-        r = requests.get(public_csv_url(sheet_id, gid), timeout=timeout, allow_redirects=True)
-    except Exception as exc:
-        return False, f"연결 실패: {exc}"
-    if r.status_code == 200 and "text/csv" in r.headers.get("content-type", ""):
-        return True, "공개 시트로 바로 읽을 수 있습니다."
-    if r.status_code in (401, 403):
-        return False, ("시트가 비공개입니다(HTTP %d). 시트를 내려받아 업로드하거나, "
-                       "서비스 계정을 설정해야 합니다." % r.status_code)
-    return False, f"예상치 못한 응답(HTTP {r.status_code})."
-
-
-# ------------------------------------------------------------------ 읽기
-def from_public_csv(sheet_id: str = DEFAULT_SHEET_ID, gid: str = DEFAULT_GID) -> pd.DataFrame:
-    import requests
-    r = requests.get(public_csv_url(sheet_id, gid), timeout=20, allow_redirects=True)
-    if r.status_code != 200:
-        raise DBSheetError(f"공개 CSV 읽기 실패 (HTTP {r.status_code}).")
-    return _normalize(pd.read_csv(io.BytesIO(r.content), dtype=object))
-
-
-def from_file(src, filename: str | None = None) -> pd.DataFrame:
-    """내려받은 시트 파일(xlsx/csv)에서 읽기."""
-    name = filename or (str(src) if isinstance(src, (str, Path)) else "")
-    ext = Path(name).suffix.lower()
-    if ext in (".xlsx", ".xlsm", ".xls"):
-        raw = pd.read_excel(src, dtype=object)
-    else:
-        data = Path(src).read_bytes() if isinstance(src, (str, Path)) else src.read()
-        raw = None
-        for enc in ("utf-8-sig", "cp949", "utf-8"):
-            try:
-                raw = pd.read_csv(io.BytesIO(data), dtype=object, encoding=enc)
-                break
-            except (UnicodeDecodeError, pd.errors.ParserError):
-                continue
-        if raw is None:
-            raise DBSheetError("CSV 인코딩을 알 수 없습니다 (utf-8/cp949 모두 실패).")
-    return _normalize(raw)
-
-
 SA_FILE = "service_account.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
@@ -113,7 +58,7 @@ def service_account_path(creds_file: str = SA_FILE) -> Path:
 
 def service_account_email(creds_info: dict | None = None,
                           creds_file: str = SA_FILE) -> str | None:
-    """서비스 계정 이메일 - 이 주소를 시트에 뷰어로 공유해야 한다."""
+    """서비스 계정 이메일 - 이 주소를 시트에 뷰어(광고 시트는 편집자)로 공유해야 한다."""
     if creds_info:
         return creds_info.get("client_email")
     p = service_account_path(creds_file)
@@ -144,11 +89,10 @@ def _explain(exc: Exception, email: str | None, sheet_id: str) -> DBSheetError:
     if "has not been used in project" in msg or "SERVICE_DISABLED" in msg or "accessNotConfigured" in msg:
         return DBSheetError(
             "이 프로젝트에서 Google Sheets API 가 아직 켜져 있지 않습니다.\n"
-            "구글 클라우드 콘솔 > API 및 서비스 > 라이브러리 에서 'Google Sheets API' 를 '사용' 하세요.\n"
-            "(켠 직후 1~2분 뒤에 반영됩니다)")
+            "구글 클라우드 콘솔 > API 및 서비스 > 라이브러리 에서 'Google Sheets API' 를 '사용' 하세요.")
     if "PERMISSION_DENIED" in msg or "403" in msg or isinstance(exc, PermissionError):
         return DBSheetError(
-            f"시트 접근 권한이 없습니다.\n시트 공유 버튼에서 아래 주소를 **뷰어**로 추가해 주세요:\n  {who}")
+            f"시트 접근 권한이 없습니다.\n시트 공유에서 아래 주소를 추가해 주세요:\n  {who}")
     if "not found" in msg.lower() or "404" in msg:
         return DBSheetError(
             f"시트를 찾지 못했습니다. 공유가 안 됐거나 시트 ID 가 다릅니다.\n"
@@ -244,48 +188,3 @@ def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
     out = out[out["utm_source"].str.lower() == "kakaopay"].copy()
     out["구분"] = [status_bucket(a, b) for a, b in zip(out["접수"], out["승인"])]
     return out[DB_COLUMNS].reset_index(drop=True)
-
-
-def from_browser(sheet_id: str = DEFAULT_SHEET_ID, gid: str = DEFAULT_GID,
-                 mode: str = "profile", profile_dir: str = "google-profile",
-                 cdp_url: str = "http://127.0.0.1:9222", timeout: int = 60_000) -> pd.DataFrame:
-    """로그인된 브라우저로 시트를 CSV 로 받아 읽는다.
-
-    mode="profile" : 전용 프로필. 최초 1회 `python collect_db.py --login` 필요
-    mode="cdp"     : 이미 켜 둔 내 Chrome 에 붙기. 로그인 불필요
-    """
-    from core.browser import browser_context
-
-    root = Path(__file__).resolve().parents[1]
-    url = public_csv_url(sheet_id, gid)
-    with browser_context(mode=mode, profile_dir=root / profile_dir,
-                         headless=True, cdp_url=cdp_url) as ctx:
-        resp = ctx.request.get(url, timeout=timeout)
-        status, body, final_url = resp.status, resp.body(), resp.url
-
-    hint = ("`python collect_db.py --login` 으로 시트가 보이는 구글 계정에 로그인해 주세요."
-            if mode == "profile" else
-            "붙은 Chrome 이 시트가 보이는 구글 계정으로 로그인돼 있는지 확인해 주세요.")
-    if status != 200 or "accounts.google.com" in final_url:
-        raise DBSheetError(
-            f"구글에 로그인돼 있지 않거나 이 계정에 시트 권한이 없습니다.\n{hint}")
-    head = body[:200].lstrip()
-    if head.startswith(b"<") or b"<html" in head.lower():
-        raise DBSheetError(f"CSV 대신 로그인 페이지가 왔습니다.\n{hint}")
-    return _normalize(pd.read_csv(io.BytesIO(body), dtype=object))
-
-
-def browser_login(profile_dir: str = "google-profile", sheet_id: str = DEFAULT_SHEET_ID) -> None:
-    """창을 띄워 구글 로그인만 수행. 시트가 보이면 창을 닫으면 된다."""
-    from core.browser import browser_context, first_page
-
-    root = Path(__file__).resolve().parents[1]
-    with browser_context(mode="profile", profile_dir=root / profile_dir,
-                         headless=False, viewport={"width": 1300, "height": 900}) as ctx:
-        page = first_page(ctx)
-        page.goto(f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit")
-        print("브라우저에서 구글 로그인을 마치고, 시트 내용이 보이면 창을 닫아 주세요.")
-        try:
-            page.wait_for_event("close", timeout=0)
-        except Exception:
-            pass

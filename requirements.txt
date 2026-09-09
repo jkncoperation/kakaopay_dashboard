@@ -1,13 +1,6 @@
 streamlit>=1.36
 pandas>=2.0
 altair>=5.0
-requests>=2.31
 openpyxl>=3.1
-playwright>=1.45
-pytest>=8.0
-# 선택: 전환 시트 자동 연결(서비스 계정)
 gspread>=6.0
 google-auth>=2.0
-# 선택: 캡처 이미지 OCR — easyocr 또는 pytesseract 중 하나
-# easyocr>=1.7
-# pytesseract>=0.3

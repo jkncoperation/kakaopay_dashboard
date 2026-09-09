@@ -1,12 +1,6 @@
 {
-  "ad_account_id": "10000246",
-  "campaign_ids": [
-    "10000919"
-  ],
-  "page_size": 100,
-  "profile_dir": "chrome-profile",
-  "headless": true,
   "ad_sheet_id": "",
   "ad_worksheet_today": "KakaopayToday",
-  "ad_worksheet_closed": "KakaopayDaily"
+  "ad_worksheet_closed": "KakaopayDaily",
+  "db_sheet_id": "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4"
 }

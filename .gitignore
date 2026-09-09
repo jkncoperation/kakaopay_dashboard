@@ -1,19 +1,13 @@
-# 비밀·개인정보
+# 비밀 · 개인정보
 service_account.json
 .streamlit/secrets.toml
 config.json
-chrome-profile/
+cloud_secrets.txt
 
-# 로컬 데이터 (전환 시트에 신청자 정보가 들어있어 절대 커밋 금지)
-data/
+# 광고센터 다운로드 파일 (테스트 기준 데이터라 저장소에는 올리지 않음)
 samples/
 
 # 파이썬
 __pycache__/
 *.py[cod]
 .pytest_cache/
-google-profile/
-kakao_state.json
-collect.log
-scraper.log
-cloud_secrets.txt
