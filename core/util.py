@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from zoneinfo import ZoneInfo
 
-__all__ = ["to_num", "to_ratio", "norm_header", "parse_any_date", "dates_from_filename"]
+__all__ = ["to_num", "to_ratio", "norm_header", "parse_any_date", "dates_from_filename",
+           "today_kst", "now_kst", "KST"]
 
 _STRIP = ("원", "₩", ",", " ", " ", "회", "건", "명")
 
@@ -102,3 +104,18 @@ def dates_from_filename(name: str):
     if start and end and end < start:
         start, end = end, start
     return start, end
+
+
+# ---------------------------------------------------------------- 오늘 날짜
+# 광고센터도 전환 시트도 한국 시간으로 하루를 끊는다. 그런데 Streamlit Cloud 는 UTC 라
+# date.today() 를 그대로 쓰면 한국 새벽~오전 9시 사이에 '오늘' 이 하루 뒤처진다.
+KST = ZoneInfo("Asia/Seoul")
+
+
+def today_kst() -> dt.date:
+    """한국 기준 오늘 날짜. 서버 시간대와 무관하게 같은 답을 준다."""
+    return dt.datetime.now(KST).date()
+
+
+def now_kst() -> dt.datetime:
+    return dt.datetime.now(KST)

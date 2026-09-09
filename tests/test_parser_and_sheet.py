@@ -125,3 +125,40 @@ def test_uploaded_file_survives_sheet_roundtrip():
 def test_empty_sheet():
     assert _from_sheet([]).empty
     assert _from_sheet([["일자", "소재"]]).empty
+
+
+# ---------------------------------------------------------------- 시간대
+def test_today_is_korea_time_not_server_time():
+    """Streamlit Cloud 는 UTC 라, 한국 새벽에는 서버 날짜가 하루 뒤처진다.
+
+    한국 01:00 = UTC 전날 16:00. 이때 date.today() 를 쓰면 '당일' 이 어제가 된다.
+    """
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from core.util import today_kst
+
+    # 한국 2026-09-10 01:22 == UTC 2026-09-09 16:22
+    moment = dt.datetime(2026, 9, 9, 16, 22, tzinfo=dt.timezone.utc)
+    assert moment.date() == dt.date(2026, 9, 9)                      # 서버(UTC) 기준
+    assert moment.astimezone(ZoneInfo("Asia/Seoul")).date() == dt.date(2026, 9, 10)
+
+    # 실제 함수는 항상 한국 날짜를 준다
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    assert today_kst() == now_utc.astimezone(ZoneInfo("Asia/Seoul")).date()
+
+
+def test_no_naive_today_in_source():
+    """서버 시간대에 휘둘리는 date.today() 가 코드에 남아 있으면 안 된다."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for f in list(root.glob("*.py")) + list(root.glob("*/*.py")):
+        if "test" in f.name or f.name == "util.py":
+            continue
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"\bdate\.today\(\)", line) and not line.strip().startswith("#"):
+                offenders.append(f"{f.relative_to(root)}:{i}")
+    assert not offenders, "한국 시간 대신 서버 시간을 쓰는 곳: " + ", ".join(offenders)

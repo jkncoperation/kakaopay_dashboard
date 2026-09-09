@@ -27,6 +27,7 @@ sys.path.insert(0, str(HERE))
 
 from core.metrics import (BUCKETS, build_creative_table, content_key,  # noqa: E402
                           parse_pairs, report_text, summarize, unmatched_db)
+from core.util import today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import ad_sheet, db_sheet  # noqa: E402
 
@@ -166,7 +167,7 @@ def panel_upload() -> None:
                              accept_multiple_files=True, key="files")
     if not files:
         return
-    fixed = st.date_input("파일명에 날짜가 없을 때 쓸 날짜", value=dt.date.today(), key="fixed_date",
+    fixed = st.date_input("파일명에 날짜가 없을 때 쓸 날짜", value=today_kst(), key="fixed_date",
                           help="파일명의 `_20260909_20260909` 를 우선 씁니다.")
     if not st.button("시트에 올리기", type="primary", key="upload"):
         return
@@ -212,9 +213,9 @@ def main() -> None:
     if c1.button("시트 다시 읽기", type="primary", help="구글 시트를 다시 읽어 화면을 갱신합니다"):
         st.cache_data.clear()
         st.rerun()
-    today_df = load_ad(dt.date.today(), dt.date.today())
+    today_df = load_ad(today_kst(), today_kst())
     c2.caption(
-        (f"오늘({dt.date.today()}) 데이터: **{len(today_df)}개 소재 · "
+        (f"오늘({today_kst()}) 데이터: **{len(today_df)}개 소재 · "
          f"소진 {today_df['소진비용'].sum():,.0f}원**" if len(today_df)
          else "오늘 데이터가 아직 없습니다.")
         + " · 광고센터에서 파일을 받아 올리면 갱신됩니다.")
@@ -227,7 +228,7 @@ def main() -> None:
         st.stop()
 
     dmin, dmax = min(dates), max(dates)
-    today = dt.date.today()
+    today = today_kst()
 
     mode = st.radio("조회 모드", ["당일", "일별", "기간"], horizontal=True, index=0)
     if mode == "당일":

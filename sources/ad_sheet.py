@@ -22,7 +22,7 @@ import datetime as dt
 
 import pandas as pd
 
-from core.util import to_num, to_ratio
+from core.util import today_kst, to_num, to_ratio
 from parsers.adcenter_file import AD_COLUMNS
 from sources.db_sheet import DBSheetError, SA_FILE, service_account_email, service_account_path
 
@@ -153,7 +153,7 @@ def push_split(df: pd.DataFrame, sheet_id: str, today=None,
     멋대로 덮어쓰면 안 된다. 그래서 기본값은 '당일 탭만'. 과거 날짜를 로컬에서 올리고
     싶을 때만 include_past=True 로 명시한다(그때도 해당 날짜의 행만 갈아끼운다).
     """
-    today = today or dt.date.today()
+    today = today or today_kst()
     d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
     if len(d):
         d["날짜"] = pd.to_datetime(d["날짜"], errors="coerce").dt.date
@@ -189,7 +189,7 @@ def read_split(sheet_id: str, today_ws: str = TODAY_WORKSHEET, closed_ws: str = 
                start=None, end=None) -> pd.DataFrame:
     """두 탭을 합쳐 읽는다. 같은 날짜가 겹치면 실시간 탭을 우선한다."""
     frames = []
-    today = dt.date.today()
+    today = today_kst()
     for name, blank_is in ((today_ws, today), (closed_ws, None)):   # 당일 탭이 우선
         try:
             ws = _open(sheet_id, name, creds_info, creds_file, WRITE_SCOPES)
@@ -217,7 +217,7 @@ def upsert_upload(df: pd.DataFrame, sheet_id: str, today=None,
     **올린 파일에 든 날짜만** 건드린다. 과거 날짜만 올렸으면 당일 탭은 손대지 않고,
     당일만 올렸으면 마감 탭을 손대지 않는다. 당일 탭의 일자는 항상 오늘로 적는다.
     """
-    today = today or dt.date.today()
+    today = today or today_kst()
     d = df.copy() if df is not None else pd.DataFrame(columns=AD_COLUMNS)
     if len(d):
         d["날짜"] = pd.to_datetime(d["날짜"], errors="coerce").dt.date

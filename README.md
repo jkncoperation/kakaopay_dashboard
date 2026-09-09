@@ -36,6 +36,9 @@
   (다운로드 파일에는 날짜 열이 없어 그대로 붙여 넣을 수 있습니다).
 - `1,234` 콤마 숫자와 `0.22%` 퍼센트 표기를 그대로 받습니다.
 
+**날짜는 항상 한국 시간 기준입니다.** Streamlit Cloud 는 UTC 로 도는데, 한국 새벽 0~9시에는
+서버 날짜가 하루 뒤처집니다. 그래서 `date.today()` 대신 `core.util.today_kst()` 를 씁니다.
+
 ## 집계 규칙
 
 - 매칭: DB `utm_content` = `kakaopay_ad{세트}-{소재}` ↔ 소재명 `{접두어}{세트}_ad{소재}`
@@ -97,7 +100,7 @@ streamlit run app.py            # 또는 run_dashboard.bat
 | `core/metrics.py` | 매칭·계산 규칙 (순수 함수) |
 | `core/util.py` | 숫자·날짜·헤더 정규화 |
 | `make_cloud_secrets.py` | 배포용 Secrets 생성 |
-| `tests/` | pytest 48개 |
+| `tests/` | pytest 51개 |
 
 ## 테스트
 
