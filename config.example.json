@@ -2,5 +2,14 @@
   "ad_sheet_id": "",
   "ad_worksheet_today": "KakaopayToday",
   "ad_worksheet_closed": "KakaopayDaily",
-  "db_sheet_id": "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4"
+  "db_sheet_id": "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4",
+  "ad_account_id": "10000246",
+  "collector": {
+    "profile_dir": "chrome-profile",
+    "headless": true,
+    "interval_min": 10,
+    "min_spend": 1,
+    "size": 100,
+    "align_to_clock": true
+  }
 }

@@ -4,8 +4,10 @@
 맞춰** 소재별 지출 · 전환수 · 전환단가를 보여 줍니다.
 
 ```
-광고센터 다운로드 파일 ─▶ 광고 시트 (당일 탭 / 마감 탭) ─┐
-                          전환(DB) 시트 ─────────────────┴─▶ 소재별 집계 · 차트 · 복사용 리포트
+광고센터 다운로드 파일 ─┐
+                        ├─▶ 광고 시트 (당일 탭 / 마감 탭) ─┐
+수집기 collect_live.py ─┘   (10분마다 당일 탭 자동 갱신)     │
+                            전환(DB) 시트 ────────────────┴─▶ 소재별 집계 · 차트 · 복사용 리포트
 ```
 
 ## 쓰는 법
@@ -20,11 +22,56 @@
 **당일 날짜의 데이터만 올립니다.** 날짜는 파일명(`_20260910_20260910`)에서 자동으로 읽습니다.
 지난 날짜 파일을 올리면 마감 탭의 그 날짜만 갱신되고 다른 날짜는 그대로 남습니다.
 
+## 당일 실시간 자동 수집 (`collect_live.py`)
+
+파일을 올리지 않아도 **10분마다** 광고센터에서 당일 성과를 읽어 당일 탭을 채웁니다.
+파일 업로드는 그대로 쓸 수 있고, 올린 값은 다음 수집 때 실시간 값으로 다시 덮입니다.
+
+```
+python collect_live.py --login     # 최초 1회 카카오 로그인 (.env 가 있으면 자동)
+python collect_live.py --once --dry # 수집해서 보여 주기만 (시트에 안 씀)
+python collect_live.py             # 10분마다 반복  — 또는 run_collector.bat
+```
+
+### 상시 운영 (작업 스케줄러)
+
+이미 등록돼 있습니다. **작업 이름 `KakaopayCollector`** — 로그인할 때 `run_collector.bat` 을 띄우고,
+그 배치가 수집기를 계속 돌립니다. 파이썬이 어떤 이유로 죽어도 60초 뒤 자동으로 다시 시작합니다.
+
+```
+schtasks /Query /TN KakaopayCollector /FO LIST   # 상태 보기 (Running 이면 정상)
+schtasks /End   /TN KakaopayCollector            # 잠시 멈추기
+schtasks /Run   /TN KakaopayCollector            # 다시 시작
+schtasks /Delete /TN KakaopayCollector /F        # 등록 해제
+```
+
+- 로그: `logs\collect_YYYYMMDD.log` (날짜별, UTF-8). 갱신 시각과 다음 예정 시각이 찍힙니다.
+- **PC 에 로그인해 있어야 돕니다**(크롬 프로필을 쓰기 때문). 로그아웃하면 멈추고, 다시 로그인하면 자동으로 시작합니다.
+- 수집기는 한 번에 하나만 뜹니다. 손으로 `collect_live.py` 를 또 실행하면
+  "이미 수집기가 돌고 있습니다" 하고 조용히 빠집니다.
+- 자리를 비운 사이 세션이 끊겨도 `.env` 계정으로 알아서 다시 로그인합니다.
+
+
+읽는 순서는 사람이 화면에서 하는 것과 같습니다.
+
+1. **캠페인은 미선택** 상태로 광고그룹 탭을 엽니다 (캠페인을 걸면 다른 캠페인 그룹이 빠집니다)
+2. **오늘 지출이 있는 광고그룹만** 고릅니다 (`config.json` 의 `collector.min_spend`, 기본 1원)
+3. 그 그룹만 선택한 채 **소재 탭**으로 넘어갑니다
+   (화면에서 좌측 체크박스를 켜고 '소재' 를 누르면 가는 `/content?...&adGroupId=1,2` 와 같은 URL)
+4. 소재 표를 읽어 `push_split()` 으로 **당일 탭만** 갈아끼웁니다 (마감 탭은 안 건드립니다)
+
+소재 탭을 필터 없이 열면 100행에서 잘려 정작 지출 중인 소재가 빠집니다. 그래서 그룹을 먼저 고릅니다.
+
+설정은 `config.json` 의 `ad_account_id` 와 `collector`(`interval_min` · `min_spend` · `headless` 등),
+카카오 계정은 `.env`(`KAKAO_ID` / `KAKAO_PW`, `.env.example` 참고)에 둡니다.
+로그인 상태는 `chrome-profile/` 에 저장되고 세션이 끊기면 자동으로 다시 로그인합니다.
+(둘 다 git 에 올라가지 않습니다.)
+
 ## 시트 구조
 
 | 탭 | 담는 것 | 갱신 |
 |---|---|---|
-| `KakaopayToday` | 오늘 날짜 | 오늘 파일을 올릴 때마다 통째로 교체 |
+| `KakaopayToday` | 오늘 날짜 | 수집기가 10분마다, 또는 오늘 파일을 올릴 때마다 통째로 교체 |
 | `KakaopayDaily` | 마감된 지난 날짜 | 그 날짜의 행만 교체. **다른 날짜는 안 건드림** |
 
 **두 탭의 열은 똑같습니다.** 광고센터 다운로드 파일과 같은 구성이고, 날짜 열 이름만 `일자` 입니다.
@@ -121,13 +168,15 @@ streamlit run app.py            # 또는 run_dashboard.bat
 | 경로 | 역할 |
 |---|---|
 | `app.py` | 대시보드 (업로드 · 집계 · 표) |
+| `collect_live.py` | 당일 실시간 수집기 (10분 루프) |
+| `sources/adcenter_live.py` | 광고센터 화면 읽기 (로그인 · 표 파싱) |
 | `sources/ad_sheet.py` | 광고 시트 읽기/쓰기 (당일 탭 / 마감 탭) |
 | `sources/db_sheet.py` | 전환 시트 읽기 (서비스 계정) |
 | `parsers/adcenter_file.py` | 광고센터 다운로드 파일 파서 |
 | `core/metrics.py` | 매칭·계산 규칙 (순수 함수) |
 | `core/util.py` | 숫자·날짜·헤더 정규화 |
 | `make_cloud_secrets.py` | 배포용 Secrets 생성 |
-| `tests/` | pytest 69개 |
+| `tests/` | pytest 87개 |
 
 ## 테스트
 

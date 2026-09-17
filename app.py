@@ -324,9 +324,9 @@ def main() -> None:
     today_df = load_ad(today_kst(), today_kst())
     c2.caption(
         (f"오늘({today_kst()}) 데이터: **{len(today_df)}개 소재 · "
-         f"소진 {today_df['소진비용'].sum():,.0f}원**" if len(today_df)
+         f"지출 {today_df['소진비용'].sum():,.0f}원**" if len(today_df)
          else "오늘 데이터가 아직 없습니다.")
-        + " · 광고센터에서 파일을 받아 올리면 갱신됩니다.")
+        + " · 매 10분 정각에 데이터가 업데이트됩니다.")
 
     dates = available_dates()
     with st.expander("데이터 넣기", expanded=not dates):

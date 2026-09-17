@@ -1,4 +1,6 @@
 # 비밀 · 개인정보
+chrome-profile/
+.env
 service_account.json
 .streamlit/secrets.toml
 config.json
