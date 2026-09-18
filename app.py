@@ -28,7 +28,7 @@ from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E4
                           parse_pairs, stage_cell, summarize, unmatched_db)
 from core.util import today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
-from sources import ad_sheet, db_sheet  # noqa: E402
+from sources import ad_sheet, conversion_fixes, db_sheet  # noqa: E402
 
 st.set_page_config(page_title="카카오페이 대시보드", page_icon="📊", layout="wide")
 
@@ -141,6 +141,8 @@ def load_db(start=None, end=None) -> pd.DataFrame:
         d = d[d["날짜"].notna() & (d["날짜"] >= start)]
     if end is not None:
         d = d[d["날짜"].notna() & (d["날짜"] <= end)]
+    # utm_content 가 누락·오기된 날은 conversion_fixes.json 으로 바로잡는다 (적힌 날짜·소재만)
+    d = conversion_fixes.apply(d)
     return d.reset_index(drop=True)
 
 
