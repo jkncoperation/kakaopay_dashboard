@@ -54,8 +54,15 @@ def utm_of(creative: str) -> str | None:
     return f"kakaopay_ad{k[0]}-{k[1]}" if k else None
 
 
-def apply(db: pd.DataFrame, fixes: dict[str, dict[str, int]] | None = None) -> pd.DataFrame:
-    """전환 목록을 보정값에 맞춘다. 건드리지 않은 날짜·소재는 그대로."""
+def apply(db: pd.DataFrame, fixes: dict[str, dict[str, int]] | None = None,
+          start=None, end=None) -> pd.DataFrame:
+    """전환 목록을 보정값에 맞춘다. 건드리지 않은 날짜·소재는 그대로.
+
+    start/end 는 지금 화면이 보고 있는 기간이다. **반드시 넘겨야 한다.**
+    호출하는 쪽은 이미 날짜로 걸러 낸 표를 주기 때문에, 범위 밖 날짜의 보정을 그대로
+    적용하면 "그 날짜가 0건" 으로 보여 없는 행을 만들어 넣고, 집계는 날짜를 다시 보지
+    않으므로 엉뚱한 날 전환수로 세어진다. (09-17 을 보는데 09-18 보정분이 끼어들던 버그)
+    """
     fixes = load() if fixes is None else fixes
     if db is None or db.empty or not fixes:
         return db
@@ -66,6 +73,8 @@ def apply(db: pd.DataFrame, fixes: dict[str, dict[str, int]] | None = None) -> p
             day = dt.date.fromisoformat(day_s)
         except ValueError:
             continue
+        if (start is not None and day < start) or (end is not None and day > end):
+            continue                       # 지금 보고 있는 기간 밖이면 손대지 않는다
         for creative, want in table.items():
             utm = utm_of(creative)
             if not utm:
@@ -83,6 +92,12 @@ def apply(db: pd.DataFrame, fixes: dict[str, dict[str, int]] | None = None) -> p
                 새행.update({"날짜": day, "utm_content": utm, "utm_source": "kakaopay",
                             "구분": 본.get("구분", "미분류")})
                 out = pd.concat([out, pd.DataFrame([새행] * (want - 지금))], ignore_index=True)
+
+    # 안전장치: 보정 때문에 기간 밖 날짜가 생겨 나가지 않도록 한 번 더 자른다
+    if start is not None:
+        out = out[out["날짜"].notna() & (out["날짜"] >= start)]
+    if end is not None:
+        out = out[out["날짜"].notna() & (out["날짜"] <= end)]
     return out.reset_index(drop=True)
 
 

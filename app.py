@@ -141,8 +141,9 @@ def load_db(start=None, end=None) -> pd.DataFrame:
         d = d[d["날짜"].notna() & (d["날짜"] >= start)]
     if end is not None:
         d = d[d["날짜"].notna() & (d["날짜"] <= end)]
-    # utm_content 가 누락·오기된 날은 conversion_fixes.json 으로 바로잡는다 (적힌 날짜·소재만)
-    d = conversion_fixes.apply(d)
+    # utm_content 가 누락·오기된 날은 conversion_fixes.json 으로 바로잡는다 (적힌 날짜·소재만).
+    # 보고 있는 기간을 넘겨야 다른 날 보정분이 끼어들지 않는다.
+    d = conversion_fixes.apply(d, start=start, end=end)
     return d.reset_index(drop=True)
 
 

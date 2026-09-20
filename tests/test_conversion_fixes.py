@@ -89,3 +89,57 @@ def test_실제_파일이_읽힌다():
     fixes = conversion_fixes.load()
     assert fixes.get("2026-09-18", {}).get("채무조정_ad3") == 3
     assert all(not k.startswith("_") for k in fixes)      # 메모 줄은 걸러진다
+
+
+# ---------------------------------------------------------------- 기간 밖으로 새지 않기
+def _db(rows):
+    from sources.db_sheet import DB_COLUMNS
+    return pd.DataFrame(rows, columns=DB_COLUMNS) if rows else pd.DataFrame(columns=DB_COLUMNS)
+
+
+def _row(날짜, utm):
+    return {"날짜": 날짜, "utm_source": "kakaopay", "utm_campaign": "c", "utm_content": utm,
+            "접수상태": "", "승인상태": "", "구분": "미분류",
+            "진행불가": 0, "접수": 0, "미팅": 0, "승인": 0}
+
+
+FIX = {"2026-09-18": {"채무조정_ad3": 3, "채무조정_ad5": 3}}
+D17, D18 = dt.date(2026, 9, 17), dt.date(2026, 9, 18)
+
+
+def test_fix_does_not_leak_into_other_days():
+    """09-17 만 보고 있을 때 09-18 보정분이 끼어들면 안 된다.
+
+    앱은 날짜로 먼저 거른 표를 넘긴다. 그 표에는 09-18 이 0건으로 보이므로,
+    범위를 모르면 없는 행을 만들어 넣고 집계가 09-17 전환수로 세어 버린다.
+    """
+    db = _db([_row(D17, "kakaopay_ad1-3"), _row(D17, "kakaopay_ad1-9")])
+    out = conversion_fixes.apply(db, FIX, start=D17, end=D17)
+    assert len(out) == 2                              # 늘어나지 않는다
+    assert set(out["날짜"]) == {D17}                  # 다른 날짜가 섞이지 않는다
+
+
+def test_fix_applies_on_its_own_day():
+    db = _db([_row(D18, "kakaopay_ad1-3")])
+    out = conversion_fixes.apply(db, FIX, start=D18, end=D18)
+    assert (out["utm_content"] == "kakaopay_ad1-3").sum() == 3
+    assert (out["utm_content"] == "kakaopay_ad1-5").sum() == 3
+    assert set(out["날짜"]) == {D18}
+
+
+def test_fix_applies_once_inside_a_period():
+    """기간 조회에 09-18 이 들어 있으면 그 날짜분만 보정된다."""
+    db = _db([_row(D17, "kakaopay_ad1-3"), _row(D18, "kakaopay_ad1-3")])
+    out = conversion_fixes.apply(db, FIX, start=D17, end=D18)
+    d18 = out[out["날짜"] == D18]
+    d17 = out[out["날짜"] == D17]
+    assert (d18["utm_content"] == "kakaopay_ad1-3").sum() == 3
+    assert (d18["utm_content"] == "kakaopay_ad1-5").sum() == 3
+    assert len(d17) == 1                              # 09-17 은 그대로
+
+
+def test_fix_without_range_still_works():
+    """범위를 안 주면 (전체 로드) 예전처럼 모두 적용한다."""
+    db = _db([_row(D18, "kakaopay_ad1-3")])
+    out = conversion_fixes.apply(db, FIX)
+    assert (out["utm_content"] == "kakaopay_ad1-3").sum() == 3
