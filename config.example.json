@@ -11,5 +11,6 @@
     "min_spend": 1,
     "size": 100,
     "align_to_clock": true
-  }
+  },
+  "closeout_hour": 1
 }

@@ -7,10 +7,14 @@
     python collect_live.py --once      # 한 번만 수집해서 시트에 기록
     python collect_live.py --dry       # 수집해서 보여 주기만 (시트에 안 씀)
     python collect_live.py             # 10분마다 반복 (Ctrl+C 로 종료)
+    python collect_live.py --closeout  # 전일자 마감만 한 번 (상시 수집기를 멈춘 뒤)
 
-당일 탭만 갈아끼운다. 마감 탭(`KakaopayDaily`)은 사람이 다운로드 파일로 관리하는 곳이라
-수집기가 건드리지 않는다(ad_sheet.push_split 의 기본값). **파일 업로드 기능은 그대로 쓸 수 있고**,
-올린 값은 다음 수집 때 실시간 값으로 다시 덮인다.
+평소에는 당일 탭만 갈아끼운다. **매일 01시 이후 첫 사이클에 전일자를 마감한다** -
+어제 하루치를 다시 수집해 마감 탭(`KakaopayDaily`)에 넣고, 당일 탭은 비운다.
+비우지 않으면 새 날이 시작돼도 어제 수치가 남아 두 탭에 같은 날이 겹친다.
+마감 시각은 config.json 의 `closeout_hour` 로 바꾼다.
+
+**파일 업로드 기능은 그대로 쓸 수 있고**, 올린 값은 다음 수집 때 실시간 값으로 다시 덮인다.
 
 필요: pip install -r requirements.txt ; playwright install chromium
 """
@@ -32,11 +36,14 @@ from sources.ad_sheet import push_split           # noqa: E402
 
 CONFIG_PATH = HERE / "config.json"
 DEFAULT_AD_SHEET = "1HNxQePggP1zPSoUDaNwdwPXKej_bD6A3N5rhWM1Q0r4"
+# 전일자 마감을 이미 했는지 기록해 둔다. 수집기가 재시작돼도 같은 날 두 번 하지 않는다.
+CLOSEOUT_STATE = HERE / "logs" / "closeout.json"
 
 
 def load_config() -> dict:
     cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
     cfg.setdefault("ad_sheet_id", DEFAULT_AD_SHEET)
+    cfg.setdefault("closeout_hour", 1)            # 매일 이 시각 이후 첫 사이클에 전일자 마감
     return cfg
 
 
@@ -72,6 +79,54 @@ def seconds_to_next_slot(interval_min: int, now: dt.datetime | None = None) -> f
             - dt.timedelta(minutes=elapsed)
             + dt.timedelta(minutes=step))
     return max(1.0, (slot - now).total_seconds())
+
+
+def closeout_done_on() -> dt.date | None:
+    """마지막으로 전일자 마감을 끝낸 날짜."""
+    try:
+        return dt.date.fromisoformat(json.loads(CLOSEOUT_STATE.read_text(encoding="utf-8"))["done"])
+    except Exception:
+        return None
+
+
+def mark_closeout_done(day: dt.date) -> None:
+    CLOSEOUT_STATE.parent.mkdir(parents=True, exist_ok=True)
+    CLOSEOUT_STATE.write_text(json.dumps({"done": day.isoformat()}), encoding="utf-8")
+
+
+def closeout_due(now: dt.datetime, hour: int = 1, done: dt.date | None = None) -> dt.date | None:
+    """지금 마감할 전일자. 아직 때가 아니거나 이미 했으면 None.
+
+    하루에 한 번, 지정 시각(기본 01시)을 넘긴 뒤 첫 사이클에 전날을 마감한다.
+    """
+    if now.hour < hour:
+        return None                       # 자정~01시 사이는 아직 전날이 안 끝난 것으로 본다
+    if done == now.date():
+        return None                       # 오늘 몫은 이미 했다
+    return now.date() - dt.timedelta(days=1)
+
+
+def closeout(page, c: dict, cfg: dict, day: dt.date, write: bool = True) -> int:
+    """전일자를 수집해 마감 탭에 넣고, 당일 탭은 비운다.
+
+    당일 탭에는 어제 값이 그대로 남아 있다. 비우지 않으면 새 날이 시작돼도 어제 수치가
+    보이고, 마감 탭과 겹쳐 같은 날이 두 군데 있게 된다. push_split 에 오늘 날짜를 주면
+    어제 행은 마감 탭으로, 당일 탭은 빈 채로 정리된다.
+    """
+    df, picked = live.collect_today(page, c, day, verbose=False)
+    if df.empty:
+        print(f"  [{now_kst():%H:%M}] {day} 마감: 지출 있는 광고그룹이 없습니다")
+        return 0
+    spend = df["소진비용"].map(lambda v: float(str(v).replace(",", "") or 0)).sum()
+    print(f"  [{now_kst():%H:%M}] {day} 마감 수집: 소재 {len(df)}행 · "
+          f"광고그룹 {len(picked)}개 · 소진 {spend:,.0f}원")
+    if not write:
+        return len(df)
+    res = push_split(df, cfg["ad_sheet_id"], today=today_kst(), include_past=True,
+                     today_ws=cfg.get("ad_worksheet_today", "KakaopayToday"),
+                     closed_ws=cfg.get("ad_worksheet_closed", "KakaopayDaily"))
+    print(f"  [{now_kst():%H:%M}] 마감 탭 {res['closed']}행 · 당일 탭 비움({res['today']}행)")
+    return res["closed"]
 
 
 def collect_once(page, c: dict, cfg: dict, write: bool = True, verbose: bool = True) -> int:
@@ -182,11 +237,13 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="한 번만 수집하고 종료")
     ap.add_argument("--dry", action="store_true", help="수집만 하고 시트에 쓰지 않음")
     ap.add_argument("--quiet", action="store_true", help="진행 내용을 덜 출력")
+    ap.add_argument("--closeout", metavar="YYYY-MM-DD", nargs="?", const="",
+                    help="전일자 마감만 수행 (날짜를 주면 그 날짜). 상시 수집기를 멈춘 뒤 실행")
     args = ap.parse_args()
 
     cfg = load_config()
     c = live.collector_config(cfg)
-    if not (args.once or args.login) and not claim_single_instance():
+    if not (args.once or args.login or args.closeout is not None) and not claim_single_instance():
         print("이미 수집기가 돌고 있습니다. (작업 스케줄러로 등록돼 있는지 확인해 보세요)")
         sys.exit(0)
     from playwright.sync_api import sync_playwright
@@ -196,9 +253,32 @@ def main() -> None:
             sys.exit(0 if login(pw, c) else 1)
 
         ctx, page = live.open_context(pw, c)
+        if args.closeout is not None:                 # 손으로 한 번만 마감
+            day = (dt.date.fromisoformat(args.closeout) if args.closeout
+                   else today_kst() - dt.timedelta(days=1))
+            try:
+                closeout(page, c, cfg, day, write=not args.dry)
+                if not args.dry:
+                    mark_closeout_done(today_kst())
+            finally:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+            return
         try:
             while True:
                 try:
+                    due = closeout_due(now_kst(), int(cfg.get("closeout_hour", 1)),
+                                       closeout_done_on())
+                    if due is not None:
+                        try:
+                            closeout(page, c, cfg, due, write=not args.dry)
+                            if not args.dry:
+                                mark_closeout_done(now_kst().date())
+                        except Exception as exc:      # 마감이 실패해도 당일 수집은 계속한다
+                            print("  ! 전일자 마감 실패(다음 사이클에 다시 시도):", exc,
+                                  file=sys.stderr)
                     if not cycle(page, ctx, c, cfg, write=not args.dry, verbose=not args.quiet):
                         return                        # 로그인을 되살리지 못했다
                 except Exception as exc:              # 네트워크 등 일시 오류 → 다음 사이클
