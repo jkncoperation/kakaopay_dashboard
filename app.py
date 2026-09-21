@@ -204,7 +204,8 @@ def panel_upload() -> None:
 TABLE_CONFIG = {
     "날짜": st.column_config.TextColumn("날짜", width="small"),
     "광고그룹": st.column_config.TextColumn("광고그룹", width="medium"),
-    "소재": st.column_config.TextColumn("소재", width="small"),
+    # 가장 긴 소재명이 '채무조정6_ad16' 처럼 한글 4자 + _ad16 이라 small 로는 잘린다.
+    "소재": st.column_config.TextColumn("소재", width=160, pinned=True),
     "지출": st.column_config.NumberColumn(format="%,d", width="small"),
     "전환수": st.column_config.NumberColumn(width="small"),
     "전환단가": st.column_config.TextColumn(width="small"),
