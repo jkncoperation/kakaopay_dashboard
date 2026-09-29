@@ -9,11 +9,26 @@ from __future__ import annotations
 
 import json
 import sys
+import pathlib
 from pathlib import Path
 
 HERE = Path(__file__).parent
 KEYS = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id",
         "auth_uri", "token_uri", "auth_provider_x509_cert_url", "client_x509_cert_url"]
+
+
+def _env(path: pathlib.Path) -> dict:
+    """모노레포 루트 .env 에서 메타 토큰을 읽어 온다 (클라우드에는 .env 가 없으므로)."""
+    out = {}
+    if path.exists():
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            if "=" in ln and not ln.strip().startswith("#"):
+                k, v = ln.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+META = _env(HERE.parent / ".env")
 
 
 def q(v) -> str:
@@ -47,6 +62,8 @@ def main() -> int:
         f"ad_worksheet_today = {q(cfg.get('ad_worksheet_today', 'KakaopayToday'))}",
         f"ad_worksheet_closed = {q(cfg.get('ad_worksheet_closed', 'KakaopayDaily'))}",
         'db_sheet_id = "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4"',
+        f"meta_token = {q(META.get('META_SYSTEM_USER_TOKEN', ''))}",
+        f"meta_account_id = {q(META.get('META_AD_ACCOUNT_ID', ''))}",
         "",
         "[gcp_service_account]",
     ] + [f"{k} = {q(sa[k])}" for k in KEYS if k in sa]

@@ -28,7 +28,8 @@ from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E4
                           parse_pairs, stage_cell, summarize, unmatched_db)
 from core.util import today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
-from sources import ad_sheet, conversion_fixes, db_sheet  # noqa: E402
+from sources import (ad_sheet, conversion_fixes, db_sheet,  # noqa: E402
+                     meta_api, meta_table)
 
 st.set_page_config(page_title="카카오페이 대시보드", page_icon="📊", layout="wide")
 
@@ -145,6 +146,25 @@ def load_db(start=None, end=None) -> pd.DataFrame:
     # 보고 있는 기간을 넘겨야 다른 날 보정분이 끼어들지 않는다.
     d = conversion_fixes.apply(d, start=start, end=end)
     return d.reset_index(drop=True)
+
+
+@st.cache_data(ttl=600, show_spinner="메타에서 불러오는 중…")
+def load_meta_ads(start, end) -> pd.DataFrame:
+    return meta_api.fetch(start, end, token=conf("meta_token"),
+                          account=conf("meta_account_id"))
+
+
+@st.cache_data(ttl=300, show_spinner="메타 전환 불러오는 중…")
+def load_meta_conv(start, end) -> pd.DataFrame:
+    d = db_sheet.from_service_account(
+        sheet_id=conf("db_sheet_id", db_sheet.DEFAULT_SHEET_ID), creds_info=sa_info(),
+        keep_sources=meta_api.META_SOURCES)
+    c = meta_api.conversions(d)
+    if start is not None:
+        c = c[c["날짜"].notna() & (c["날짜"] >= start)]
+    if end is not None:
+        c = c[c["날짜"].notna() & (c["날짜"] <= end)]
+    return c.reset_index(drop=True)
 
 
 def available_dates() -> list[str]:
@@ -315,6 +335,89 @@ def drilldown(g: pd.DataFrame) -> None:
     st.caption(METRIC_HELP)
 
 
+META_CONFIG = {
+    "캠페인": st.column_config.TextColumn("캠페인", width=220),
+    "광고세트": st.column_config.TextColumn("광고세트", width=180),
+    "소재": st.column_config.TextColumn("소재", width=200, pinned=True),
+    **{k: v for k, v in TABLE_CONFIG.items() if k not in ("날짜", "광고그룹", "소재")},
+}
+
+
+def meta_rows(items: list[tuple[str, dict]], head: str) -> pd.DataFrame:
+    """(이름, 합계) 목록 -> 카카오페이와 같은 지표 열을 가진 표."""
+    return pd.DataFrame([stage_row({head: name}, v) for name, v in items])
+
+
+def meta_panel(g: pd.DataFrame, conv: pd.DataFrame) -> None:
+    """캠페인 -> 광고세트 -> 소재 3단 드릴다운.
+
+    메타는 캠페인/세트/소재가 따로라 카카오페이(세트 -> 소재)보다 한 단 깊다.
+    누른 자리를 session_state 에 담아 두고, 되돌아올 때 표 선택을 비운다.
+    """
+    st.session_state.setdefault("meta_camp", None)
+    st.session_state.setdefault("meta_set", None)
+    st.session_state.setdefault("meta_ver", 0)
+    camp, aset = st.session_state["meta_camp"], st.session_state["meta_set"]
+
+    def back(col, to_camp, to_set, label, key):
+        if col.button(label, key=key):
+            st.session_state["meta_camp"] = to_camp
+            st.session_state["meta_set"] = to_set
+            st.session_state["meta_ver"] += 1
+            st.rerun()
+
+    def pick(table: pd.DataFrame, names: list[str], on_pick, key: str):
+        ev = st.dataframe(table, width="stretch", hide_index=True, column_config=META_CONFIG,
+                          on_select="rerun", selection_mode="single-row",
+                          key=f"{key}{st.session_state['meta_ver']}")
+        rows = list(getattr(getattr(ev, "selection", None), "rows", []) or [])
+        if rows and rows[0] < len(names):
+            on_pick(names[rows[0]])
+            st.rerun()
+
+    # 3단: 소재
+    if camp and aset:
+        c1, c2 = st.columns([1, 5])
+        back(c1, camp, None, "← 광고세트", "meta_back2")
+        view = g[(g["캠페인"] == camp) & (g["광고세트"] == aset)]
+        v = meta_table.totals(view)
+        c2.markdown(f"**{camp}** › **{aset}** — 소재 {len(view)}개 · 지출 {v['지출']:,.0f}원 · "
+                    f"전환수 {int(v['전환수'])}건")
+        st.dataframe(meta_rows(meta_table.roll_up(view, ["소재"]), "소재"),
+                     width="stretch", hide_index=True, column_config=META_CONFIG)
+        st.caption(METRIC_HELP)
+        return
+
+    # 2단: 광고세트
+    if camp:
+        c1, c2 = st.columns([1, 5])
+        back(c1, None, None, "← 캠페인", "meta_back1")
+        view = g[g["캠페인"] == camp]
+        v = meta_table.totals(view)
+        c2.markdown(f"**{camp}** — 광고세트 {view['광고세트'].nunique()}개 · "
+                    f"지출 {v['지출']:,.0f}원 · 전환수 {int(v['전환수'])}건")
+        st.caption("광고세트를 클릭하면 그 세트의 소재로 들어갑니다.")
+        items = meta_table.roll_up(view, ["광고세트"])
+        pick(meta_rows(items, "광고세트"), [n for n, _ in items],
+             lambda n: st.session_state.__setitem__("meta_set", n), "meta_sets")
+        st.caption(METRIC_HELP)
+        return
+
+    # 1단: 캠페인
+    st.caption("캠페인을 클릭하면 광고세트 → 소재로 들어갑니다. 지출이 있는 캠페인만 나옵니다.")
+    items = meta_table.roll_up(g, ["캠페인"])
+    pick(meta_rows(items, "캠페인"), [n for n, _ in items],
+         lambda n: st.session_state.__setitem__("meta_camp", n), "meta_camps")
+    st.caption(METRIC_HELP)
+
+    um = meta_table.unmatched(g, conv)
+    if len(um):
+        with st.expander(f"광고 소재와 매칭되지 않은 전환 {len(um)}건"):
+            st.caption("소재명(utm_content)이 메타의 소재명과 다릅니다. 이름을 바꿨거나 삭제된 소재입니다.")
+            st.dataframe(um[["날짜", "utm_campaign", "utm_content", "구분"]],
+                         width="stretch", hide_index=True)
+
+
 # ================================================================ 화면
 def main() -> None:
     require_setup()
@@ -391,7 +494,7 @@ def main() -> None:
                (f" · ⚠ 소재와 매칭 안 된 전환 {len(um)}건" if len(um) else "") +
                (" · 이 기간에 들어온 전환 없음" if db.empty else ""))
 
-    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환"])
+    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환", "메타"])
 
     with tabs[0]:
         st.dataframe(creative_table(g), width="stretch", hide_index=True,
@@ -410,6 +513,31 @@ def main() -> None:
                          width="stretch", hide_index=True, column_config=TABLE_CONFIG)
             st.caption("맨 아래 **합계** 는 기간 전체를 합친 값입니다. "
                        "사이드바의 전환수 직접 지정은 날짜마다 그대로 적용됩니다.")
+
+    with tabs[4]:
+        try:
+            m_ads = load_meta_ads(d0, d1)
+            m_conv = load_meta_conv(d0, d1)
+        except meta_api.MetaError as exc:
+            st.error(str(exc))
+            m_ads = m_conv = None
+        except Exception as exc:
+            st.error(f"메타 데이터를 가져오지 못했습니다: {exc}")
+            m_ads = m_conv = None
+        if m_ads is not None:
+            if m_ads.empty:
+                st.info(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") + " 구간에 지출이 있는 메타 광고가 없습니다.")
+            else:
+                mg = meta_table.build(m_ads, m_conv)
+                v = meta_table.totals(mg)
+                c = st.columns(5)
+                c[0].metric("지출", money(v["지출"]))
+                c[1].metric("총 전환수", f"{int(v['전환수'])}건")
+                c[2].metric("전환단가",
+                            money(round(v["지출"] / v["전환수"]) if v["전환수"] else None))
+                c[3].metric("접수", f"{int(v['접수'])}건")
+                c[4].metric("미팅", f"{int(v['미팅'])}건")
+                meta_panel(mg, m_conv)
 
     with tabs[3]:
         if um.empty:

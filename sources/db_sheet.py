@@ -115,9 +115,13 @@ def _explain(exc: Exception, email: str | None, sheet_id: str) -> DBSheetError:
     return DBSheetError(f"시트를 읽지 못했습니다: {msg}")
 
 
+KAKAOPAY_SOURCES = ("kakaopay",)
+
+
 def from_service_account(sheet_id: str = DEFAULT_SHEET_ID, worksheet: str | None = None,
                          creds_info: dict | None = None,
-                         creds_file: str = SA_FILE) -> pd.DataFrame:
+                         creds_file: str = SA_FILE,
+                         keep_sources=KAKAOPAY_SOURCES) -> pd.DataFrame:
     """서비스 계정으로 읽기 - 세션 만료가 없어 무인 자동화에 가장 안정적.
 
     필요한 것: Google Sheets API 사용 설정 + 시트를 서비스 계정 이메일에 뷰어 공유.
@@ -140,7 +144,8 @@ def from_service_account(sheet_id: str = DEFAULT_SHEET_ID, worksheet: str | None
         raise _explain(exc, email, sheet_id) from exc
     if not vals:
         raise DBSheetError("시트가 비어 있습니다.")
-    return _normalize(pd.DataFrame(vals[1:], columns=[h.strip() for h in vals[0]]))
+    return _normalize(pd.DataFrame(vals[1:], columns=[h.strip() for h in vals[0]]),
+                      keep_sources=keep_sources)
 
 
 def check_service_account(sheet_id: str = DEFAULT_SHEET_ID,
@@ -177,8 +182,12 @@ def _pick(cols: list[str], *names: str) -> str | None:
     return None
 
 
-def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
-    """시트 원본 → 표준 DB 스키마. utm_source=kakaopay 행만 남긴다."""
+def _normalize(raw: pd.DataFrame, keep_sources=KAKAOPAY_SOURCES) -> pd.DataFrame:
+    """시트 원본 → 표준 DB 스키마.
+
+    keep_sources 로 남길 utm_source 를 고른다. 기본은 kakaopay 만.
+    메타처럼 다른 매체를 쓸 때는 그 매체 이름을 넘기거나 None(전부) 을 준다.
+    """
     if raw is None or raw.empty:
         return pd.DataFrame(columns=DB_COLUMNS)
     raw = raw.rename(columns=lambda c: str(c).strip())
@@ -200,7 +209,10 @@ def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
     out["승인상태"] = raw[_pick(cols, "승인")].astype(str) if _pick(cols, "승인") else ""
     out["날짜"] = raw[c_time].map(parse_any_date) if c_time else None
 
-    out = out[out["utm_source"].str.lower() == "kakaopay"].copy()
+    if keep_sources:
+        low = [str(x).lower() for x in keep_sources]
+        out = out[out["utm_source"].str.lower().isin(low)]
+    out = out.copy()
     pairs = list(zip(out["접수상태"], out["승인상태"]))
     out["구분"] = [status_bucket(a, b) for a, b in pairs]
     flags = [status_flags(a, b) for a, b in pairs]

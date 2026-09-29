@@ -89,6 +89,27 @@ schtasks /Delete /TN KakaopayCollector /F        # 등록 해제
 **날짜는 항상 한국 시간 기준입니다.** Streamlit Cloud 는 UTC 로 도는데, 한국 새벽 0~9시에는
 서버 날짜가 하루 뒤처집니다. 그래서 `date.today()` 대신 `core.util.today_kst()` 를 씁니다.
 
+## 메타 (탭 하나 추가)
+
+메타는 Marketing API 가 있어 시트를 거치지 않고 대시보드가 곧바로 호출합니다. 시스템 사용자
+토큰이라 만료가 없고, 카카오페이처럼 브라우저 수집기를 띄울 필요가 없습니다.
+
+```
+Meta Marketing API ─┐
+     전환(DB) 시트 ─┴─▶ 캠페인 → 광고세트 → 소재 3단 드릴다운
+```
+
+- **매칭은 소재명** — API 의 `ad_name` 이 전환 시트의 `utm_content` 와 그대로 같습니다
+  (메타 utm 구조: `utm_medium`=캠페인, `utm_campaign`=광고세트, `utm_content`=소재명)
+- **지출이 있는 것만** 가져옵니다. 계정에 리턴찬스 상품이 여러 개 섞여 있어서입니다
+- 지표 열은 카카오페이와 동일합니다(지출·전환수·전환단가·진행불가·접수·미팅·승인·CPM·CTR·CPC·제출율)
+- 같은 소재명이 두 세트에 걸쳐 있으면 전환은 **지출이 큰 쪽에만** 붙입니다.
+  전환 시트에는 소재명만 있어 어느 세트 것인지 알 수 없기 때문입니다
+
+토큰 설정:
+- **클라우드**: Secrets 에 `meta_token` / `meta_account_id`
+- **내 PC**: 모노레포 루트 `.env` 의 `META_SYSTEM_USER_TOKEN` / `META_AD_ACCOUNT_ID`
+
 ## 집계 규칙
 
 - 매칭: DB `utm_content` = `kakaopay_ad{세트}-{소재}` ↔ 소재명 `{접두어}{세트}_ad{소재}`
@@ -172,6 +193,8 @@ streamlit run app.py            # 또는 run_dashboard.bat
 | `sources/adcenter_live.py` | 광고센터 화면 읽기 (로그인 · 표 파싱) |
 | `sources/ad_sheet.py` | 광고 시트 읽기/쓰기 (당일 탭 / 마감 탭) |
 | `sources/db_sheet.py` | 전환 시트 읽기 (서비스 계정) |
+| `sources/meta_api.py` | 메타 Marketing API 호출 · 전환 매칭 |
+| `sources/meta_table.py` | 메타 3단(캠페인·세트·소재) 집계 |
 | `parsers/adcenter_file.py` | 광고센터 다운로드 파일 파서 |
 | `core/metrics.py` | 매칭·계산 규칙 (순수 함수) |
 | `core/util.py` | 숫자·날짜·헤더 정규화 |
