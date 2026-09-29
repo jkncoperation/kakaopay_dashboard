@@ -13,3 +13,6 @@ samples/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# 수집기 로그·상태 (저장소에 쌓을 필요 없음)
+logs/
