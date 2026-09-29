@@ -1,12 +1,13 @@
-"""카카오페이 대시보드.
+"""리턴찬스 광고 대시보드 - 카카오페이 · 메타.
 
     streamlit run app.py
 
-광고센터에서 받은 다운로드 파일을 올리면 구글 시트에 기록하고, 그 시트와 전환(DB) 시트를
-소재번호로 맞춰 소재별 지출 · 전환수 · 전환단가를 보여 준다.
+맨 위에서 매체를 고른다. 두 매체는 데이터 출처와 집계 단위가 달라 화면을 나눠 뒀고,
+지표 열(지출·전환수·전환단가·진행불가·접수·미팅·승인·CPM·CTR·CPC·제출율)은 같다.
 
-    다운로드 파일 ─▶ 광고 시트 (당일 탭 / 마감 탭) ─┐
-                     전환(DB) 시트 ─────────────────┴─▶ 소재별 집계 표
+    카카오페이  다운로드 파일 ─▶ 광고 시트(당일/마감) ─┐   세트 → 소재
+    메타        Marketing API ────────────────────────┤   캠페인 → 세트 → 소재
+                                전환(DB) 시트 ────────┴─▶ 소재명·번호로 매칭해 집계
 
 로컬에서는 `config.json` + `service_account.json`, Streamlit Cloud 에서는 Secrets 를 쓴다.
 코드 경로는 하나다.
@@ -31,7 +32,7 @@ from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import (ad_sheet, conversion_fixes, db_sheet,  # noqa: E402
                      meta_api, meta_table)
 
-st.set_page_config(page_title="카카오페이 대시보드", page_icon="📊", layout="wide")
+st.set_page_config(page_title="리턴찬스 광고 대시보드", page_icon="📊", layout="wide")
 
 def money(v) -> str:
     return "-" if v is None or pd.isna(v) else f"{v:,.0f}원"
@@ -98,7 +99,7 @@ def require_setup() -> None:
     """시트 주소가 있어야 시작할 수 있다."""
     if conf("ad_sheet_id"):
         return
-    st.title("카카오페이 대시보드")
+    st.title("리턴찬스 광고 대시보드")
     st.error("광고 시트가 연결되지 않았습니다.")
     st.markdown(
         "이 앱은 구글 시트에 기록된 광고·전환 데이터를 읽습니다.\n\n"
@@ -112,7 +113,7 @@ def gate() -> None:
     pw_set = conf("app_password", "")
     if not pw_set or st.session_state.get("auth"):
         return
-    st.title("카카오페이 대시보드")
+    st.title("리턴찬스 광고 대시보드")
     pw = st.text_input("비밀번호", type="password")
     if pw and pw == pw_set:
         st.session_state["auth"] = True
@@ -421,30 +422,8 @@ def meta_panel(g: pd.DataFrame, conv: pd.DataFrame) -> None:
 
 
 # ================================================================ 화면
-def main() -> None:
-    require_setup()
-    gate()
-    st.title("카카오페이 대시보드")
-
-    c1, c2 = st.columns([1, 4])
-    if c1.button("새로고침", type="primary",
-                 help="구글 시트와 메타 API 를 지금 다시 읽습니다"):
-        st.cache_data.clear()
-        st.rerun()
-    today_df = load_ad(today_kst(), today_kst())
-    c2.caption(
-        (f"오늘({today_kst()}) 데이터: **{len(today_df)}개 소재 · "
-         f"지출 {today_df['소진비용'].sum():,.0f}원**" if len(today_df)
-         else "오늘 데이터가 아직 없습니다.")
-        + " · 매 10분 정각에 데이터가 업데이트됩니다.")
-
-    dates = available_dates()
-    with st.expander("데이터 넣기", expanded=not dates):
-        panel_upload()
-    if not dates:
-        st.info("아직 광고 데이터가 없습니다. 위 **데이터 넣기** 에서 광고센터 다운로드 파일을 올려 주세요.")
-        st.stop()
-
+def kakaopay_view(dates: list[str]) -> None:
+    """카카오페이 - 광고 시트 + 전환 시트. 탭 네 개."""
     dmin, dmax = min(dates), max(dates)
     today = today_kst()
 
@@ -497,7 +476,7 @@ def main() -> None:
                (f" · ⚠ 소재와 매칭 안 된 전환 {len(um)}건" if len(um) else "") +
                (" · 이 기간에 들어온 전환 없음" if db.empty else ""))
 
-    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환", "메타"])
+    tabs = st.tabs(["소재별", "세트별", "일별 추이", "매칭 안 된 전환"])
 
     with tabs[0]:
         st.dataframe(creative_table(g), width="stretch", hide_index=True,
@@ -517,34 +496,6 @@ def main() -> None:
             st.caption("맨 아래 **합계** 는 기간 전체를 합친 값입니다. "
                        "사이드바의 전환수 직접 지정은 날짜마다 그대로 적용됩니다.")
 
-    with tabs[4]:
-        try:
-            slot = slot_key(10)          # 지출과 전환을 같은 시점 기준으로 맞춘다
-            m_ads = load_meta_ads(d0, d1, slot)
-            m_conv = load_meta_conv(d0, d1, slot)
-        except meta_api.MetaError as exc:
-            st.error(str(exc))
-            m_ads = m_conv = None
-        except Exception as exc:
-            st.error(f"메타 데이터를 가져오지 못했습니다: {exc}")
-            m_ads = m_conv = None
-        if m_ads is not None:
-            if m_ads.empty:
-                st.info(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") + " 구간에 지출이 있는 메타 광고가 없습니다.")
-            else:
-                mg = meta_table.build(m_ads, m_conv)
-                v = meta_table.totals(mg)
-                st.caption(f"메타 API 기준 시각 **{slot}** · 매 10분 정각에 갱신됩니다. "
-                           "위 **새로고침** 을 누르면 곧바로 다시 불러옵니다.")
-                c = st.columns(5)
-                c[0].metric("지출", money(v["지출"]))
-                c[1].metric("총 전환수", f"{int(v['전환수'])}건")
-                c[2].metric("전환단가",
-                            money(round(v["지출"] / v["전환수"]) if v["전환수"] else None))
-                c[3].metric("접수", f"{int(v['접수'])}건")
-                c[4].metric("미팅", f"{int(v['미팅'])}건")
-                meta_panel(mg, m_conv)
-
     with tabs[3]:
         if um.empty:
             st.success("모든 전환이 광고 소재와 매칭되었습니다.")
@@ -553,6 +504,87 @@ def main() -> None:
                        "utm_content 오타이거나, 삭제된 소재 또는 선택하지 않은 세트의 전환일 수 있습니다.")
             st.dataframe(um[["날짜", "utm_campaign", "utm_content", "접수상태", "승인상태", "구분"]],
                          width="stretch", hide_index=True)
+
+
+def meta_view() -> None:
+    """메타 - Marketing API + 전환 시트. 캠페인 → 광고세트 → 소재 3단."""
+    today = today_kst()
+    mode = st.radio("조회 모드", ["당일", "일별", "기간"], horizontal=True, index=0,
+                    key="meta_mode")
+    if mode == "당일":
+        d0 = d1 = today
+    elif mode == "일별":
+        d0 = d1 = st.date_input("날짜", value=today, max_value=today, key="meta_day")
+    else:
+        rng = st.date_input("기간", (today - dt.timedelta(days=13), today),
+                            max_value=today, key="meta_range")
+        d0, d1 = (rng if isinstance(rng, tuple) and len(rng) == 2
+                  else (today - dt.timedelta(days=13), today))
+
+    try:
+        slot = slot_key(10)              # 지출과 전환을 같은 시점 기준으로 맞춘다
+        ads = load_meta_ads(d0, d1, slot)
+        conv = load_meta_conv(d0, d1, slot)
+    except meta_api.MetaError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:
+        st.error(f"메타 데이터를 가져오지 못했습니다: {exc}")
+        return
+
+    if ads.empty:
+        st.info(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
+                " 구간에 지출이 있는 메타 광고가 없습니다.")
+        return
+
+    g = meta_table.build(ads, conv)
+    v = meta_table.totals(g)
+    c = st.columns(5)
+    c[0].metric("지출", money(v["지출"]))
+    c[1].metric("총 전환수", f"{int(v['전환수'])}건")
+    c[2].metric("전환단가", money(round(v["지출"] / v["전환수"]) if v["전환수"] else None))
+    c[3].metric("접수", f"{int(v['접수'])}건")
+    c[4].metric("미팅", f"{int(v['미팅'])}건")
+    st.caption(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
+               f" · 캠페인 {g['캠페인'].nunique()}개 · 광고세트 {g['광고세트'].nunique()}개 · "
+               f"소재 {len(g)}개  |  메타 API 기준 시각 **{slot}** · 매 10분 정각에 갱신됩니다. "
+               "위 **새로고침** 을 누르면 곧바로 다시 불러옵니다.")
+    meta_panel(g, conv)
+
+
+def main() -> None:
+    require_setup()
+    gate()
+    st.title("리턴찬스 광고 대시보드")
+
+    c1, c2 = st.columns([1, 4])
+    if c1.button("새로고침", type="primary",
+                 help="구글 시트와 메타 API 를 지금 다시 읽습니다"):
+        st.cache_data.clear()
+        st.rerun()
+    today_df = load_ad(today_kst(), today_kst())
+    c2.caption(
+        (f"카카오페이 오늘({today_kst()}) 데이터: **{len(today_df)}개 소재 · "
+         f"지출 {today_df['소진비용'].sum():,.0f}원**" if len(today_df)
+         else "카카오페이 오늘 데이터가 아직 없습니다.")
+        + " · 매 10분 정각에 데이터가 업데이트됩니다.")
+
+    # 매체를 맨 위에서 고른다. 카카오페이(시트)와 메타(API)는 데이터 출처·집계 단위가
+    # 달라서, 한 탭 줄에 섞으면 소재별/세트별이 어느 매체 것인지 헷갈린다.
+    channel = st.segmented_control("매체", ["카카오페이", "메타"], default="카카오페이",
+                                   key="channel") or "카카오페이"
+
+    if channel == "메타":
+        meta_view()
+        return
+
+    dates = available_dates()
+    with st.expander("데이터 넣기", expanded=not dates):
+        panel_upload()
+    if not dates:
+        st.info("아직 광고 데이터가 없습니다. 위 **데이터 넣기** 에서 광고센터 다운로드 파일을 올려 주세요.")
+        st.stop()
+    kakaopay_view(dates)
 
 
 if __name__ == "__main__":
