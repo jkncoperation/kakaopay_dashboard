@@ -23,6 +23,7 @@ import datetime as dt
 import pandas as pd
 
 from core.util import today_kst, to_num, to_ratio
+from sources import gsheets
 from parsers.adcenter_file import AD_COLUMNS
 from sources.db_sheet import DBSheetError, SA_FILE, service_account_email, service_account_path
 
@@ -43,19 +44,14 @@ NUM_HEADERS = ("소진비용", "노출수", "클릭수", "도달수", "eCPM", "C
 
 
 def _client(creds_info: dict | None, creds_file: str, scopes: list[str]):
+    """인증은 gsheets 가 캐시한다(같은 자격 증명이면 한 번만)."""
+    p = service_account_path(creds_file)
+    if not creds_info and not p.exists():
+        raise DBSheetError(f"'{creds_file}' 이 없습니다.")
     try:
-        import gspread
-        from google.oauth2.service_account import Credentials
+        return gsheets.client(creds_info, str(p), scopes)
     except ImportError as exc:
         raise DBSheetError(f"gspread/google-auth 가 설치돼 있지 않습니다: {exc}")
-    if creds_info:
-        creds = Credentials.from_service_account_info(dict(creds_info), scopes=scopes)
-    else:
-        p = service_account_path(creds_file)
-        if not p.exists():
-            raise DBSheetError(f"'{creds_file}' 이 없습니다.")
-        creds = Credentials.from_service_account_file(str(p), scopes=scopes)
-    return gspread.authorize(creds)
 
 
 def _open(sheet_id: str, worksheet: str, creds_info, creds_file, scopes, create: bool = False):
@@ -69,19 +65,24 @@ def _open(sheet_id: str, worksheet: str, creds_info, creds_file, scopes, create:
             f"그 시트에 공유돼 있는지 확인해 주세요.\n  시트 ID: {sheet_id}\n  주소: {who}\n"
             f"  (원인: {str(exc).splitlines()[0]})") from exc
     try:
-        return sh.worksheet(worksheet)
+        return gsheets.worksheet(sheet_id, worksheet, creds_info,
+                                 str(service_account_path(creds_file)), scopes)
     except Exception:
+        gsheets.invalidate()
         if not create:
             raise DBSheetError(
                 f"시트에 '{worksheet}' 탭이 없습니다. 수집기를 한 번 돌리면 자동으로 만들어집니다.")
     # 새 탭을 만든 직후에는 구글 쪽 메타데이터가 아직 안 잡혀 바로 쓰면 실패할 때가 있다.
     import time
     sh.add_worksheet(worksheet, rows=2000, cols=max(len(TODAY_COLUMNS), 26))
+    gsheets.invalidate()                      # 새 탭이 생겼으니 핸들 캐시를 버린다
     for _ in range(5):
         time.sleep(1.0)
         try:
-            return sh.worksheet(worksheet)
+            return gsheets.worksheet(sheet_id, worksheet, creds_info,
+                                     str(service_account_path(creds_file)), scopes)
         except Exception:
+            gsheets.invalidate()
             continue
     raise DBSheetError(f"'{worksheet}' 탭을 만들었지만 열지 못했습니다. 다시 실행해 주세요.")
 

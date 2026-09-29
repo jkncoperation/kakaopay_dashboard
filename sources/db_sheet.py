@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from core.util import parse_any_date
+from sources import gsheets
 
 DEFAULT_SHEET_ID = "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4"
 DEFAULT_GID = "0"
@@ -127,17 +128,15 @@ def from_service_account(sheet_id: str = DEFAULT_SHEET_ID, worksheet: str | None
     필요한 것: Google Sheets API 사용 설정 + 시트를 서비스 계정 이메일에 뷰어 공유.
     (Drive API 는 필요 없다 - open_by_key 는 sheets.googleapis.com 만 쓴다)
     """
-    try:
-        import gspread
-    except ImportError as exc:
-        raise DBSheetError(f"gspread/google-auth 가 설치돼 있지 않습니다: {exc}")
-
     email = service_account_email(creds_info, creds_file)
-    creds = _credentials(creds_info, creds_file)
+    if not creds_info and not service_account_path(creds_file).exists():
+        _credentials(creds_info, creds_file)          # 없는 키 파일 안내를 그대로 쓴다
     try:
-        sh = gspread.authorize(creds).open_by_key(sheet_id)
-        ws = sh.worksheet(worksheet) if worksheet else sh.get_worksheet(0)
-        vals = ws.get_all_values()
+        # 인증·열기는 gsheets 가 캐시한다. 한 번 실패하면 캐시를 비우고 다시 시도.
+        vals = gsheets.with_retry(
+            lambda: gsheets.worksheet(sheet_id, worksheet, creds_info,
+                                      str(service_account_path(creds_file)),
+                                      SCOPES).get_all_values())
     except DBSheetError:
         raise
     except Exception as exc:

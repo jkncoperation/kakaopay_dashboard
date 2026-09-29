@@ -135,14 +135,32 @@ def load_ad(start=None, end=None) -> pd.DataFrame:
     return ad_sheet.read_split(conf("ad_sheet_id"), start=start, end=end, **_ad_args())
 
 
-@st.cache_data(ttl=120, show_spinner="시트에서 불러오는 중…")
-def load_db(start=None, end=None) -> pd.DataFrame:
-    d = db_sheet.from_service_account(
-        sheet_id=conf("db_sheet_id", db_sheet.DEFAULT_SHEET_ID), creds_info=sa_info())
+# 전환 시트는 매체와 무관하게 한 장이다. 예전엔 카카오페이용·메타용으로 따로 내려받아
+# 같은 15,000행을 두 번 받았다. 한 번 받아 두고 매체별로 걸러 쓴다.
+# slot 이 캐시 키다. 2분마다 새로 받으므로 전환 최신성은 그대로.
+CONV_SLOT_MIN = 2
+
+
+@st.cache_data(ttl=600, show_spinner="전환 시트 불러오는 중…")
+def load_conv_all(slot: str) -> pd.DataFrame:
+    return db_sheet.from_service_account(
+        sheet_id=conf("db_sheet_id", db_sheet.DEFAULT_SHEET_ID), creds_info=sa_info(),
+        keep_sources=None)                   # 전 매체를 한 번에
+
+
+def _in_range(d: pd.DataFrame, start, end) -> pd.DataFrame:
     if start is not None:
         d = d[d["날짜"].notna() & (d["날짜"] >= start)]
     if end is not None:
         d = d[d["날짜"].notna() & (d["날짜"] <= end)]
+    return d
+
+
+def load_db(start=None, end=None) -> pd.DataFrame:
+    """카카오페이 전환. 공용 전환 표에서 걸러 쓴다."""
+    d = load_conv_all(slot_key(CONV_SLOT_MIN))
+    src = d["utm_source"].astype(str).str.strip().str.lower()
+    d = _in_range(d[src.isin(db_sheet.KAKAOPAY_SOURCES)], start, end)
     # utm_content 가 누락·오기된 날은 conversion_fixes.json 으로 바로잡는다 (적힌 날짜·소재만).
     # 보고 있는 기간을 넘겨야 다른 날 보정분이 끼어들지 않는다.
     d = conversion_fixes.apply(d, start=start, end=end)
@@ -157,17 +175,10 @@ def load_meta_ads(start, end, slot: str) -> pd.DataFrame:
                           account=conf("meta_account_id"))
 
 
-@st.cache_data(ttl=1800, show_spinner="메타 전환 불러오는 중…")
-def load_meta_conv(start, end, slot: str) -> pd.DataFrame:
-    d = db_sheet.from_service_account(
-        sheet_id=conf("db_sheet_id", db_sheet.DEFAULT_SHEET_ID), creds_info=sa_info(),
-        keep_sources=meta_api.META_SOURCES)
-    c = meta_api.conversions(d)
-    if start is not None:
-        c = c[c["날짜"].notna() & (c["날짜"] >= start)]
-    if end is not None:
-        c = c[c["날짜"].notna() & (c["날짜"] <= end)]
-    return c.reset_index(drop=True)
+def load_meta_conv(start, end) -> pd.DataFrame:
+    """메타 전환. 카카오페이와 같은 공용 전환 표를 쓴다(두 번 내려받지 않는다)."""
+    c = meta_api.conversions(load_conv_all(slot_key(CONV_SLOT_MIN)))
+    return _in_range(c, start, end).reset_index(drop=True)
 
 
 def available_dates() -> list[str]:
@@ -524,7 +535,7 @@ def meta_view() -> None:
     try:
         slot = slot_key(10)              # 지출과 전환을 같은 시점 기준으로 맞춘다
         ads = load_meta_ads(d0, d1, slot)
-        conv = load_meta_conv(d0, d1, slot)
+        conv = load_meta_conv(d0, d1)
     except meta_api.MetaError as exc:
         st.error(str(exc))
         return
@@ -547,7 +558,8 @@ def meta_view() -> None:
     c[4].metric("미팅", f"{int(v['미팅'])}건")
     st.caption(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
                f" · 캠페인 {g['캠페인'].nunique()}개 · 광고세트 {g['광고세트'].nunique()}개 · "
-               f"소재 {len(g)}개  |  메타 API 기준 시각 **{slot}** · 매 10분 정각에 갱신됩니다. "
+               f"소재 {len(g)}개  |  지출 기준 **{slot}** (10분 정각) · "
+               f"전환 기준 **{slot_key(CONV_SLOT_MIN)}** ({CONV_SLOT_MIN}분). "
                "위 **새로고침** 을 누르면 곧바로 다시 불러옵니다.")
     meta_panel(g, conv)
 

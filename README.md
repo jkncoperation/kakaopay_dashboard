@@ -124,6 +124,23 @@ Meta Marketing API ─┐
 - **클라우드**: Secrets 에 `meta_token` / `meta_account_id`
 - **내 PC**: 모노레포 루트 `.env` 의 `META_SYSTEM_USER_TOKEN` / `META_AD_ACCOUNT_ID`
 
+## 속도
+
+시트 한 번 읽는 3초 중 1.9초가 '여는 데' 쓰였습니다(`open_by_key` 1.4초 + `get_worksheet` 0.4초).
+`sources/gsheets.py` 가 인증·시트·탭 핸들을 캐시해 데이터 시간만 남깁니다.
+
+전환 시트는 매체와 무관하게 한 장이라 **한 번만 내려받아 매체별로 걸러 씁니다.**
+예전엔 카카오페이용·메타용으로 같은 15,000행을 두 번 받았습니다.
+
+| | 예전 | 지금 |
+|---|---:|---:|
+| 카카오페이 첫 조회 | ~9초 | ~7초 |
+| 메타로 전환 | ~12초 | **~1.5초** |
+| 매체 되돌아오기 | ~11초 | **~0초** |
+
+갱신 주기는 그대로입니다 — 전환 2분, 카카오페이 광고 2분, 메타 지출 10분 정각.
+탭이 새로 생기거나 핸들이 낡으면 `with_retry` 가 캐시를 버리고 다시 엽니다.
+
 ## 집계 규칙
 
 - 매칭: DB `utm_content` = `kakaopay_ad{세트}-{소재}` ↔ 소재명 `{접두어}{세트}_ad{소재}`
@@ -207,6 +224,7 @@ streamlit run app.py            # 또는 run_dashboard.bat
 | `sources/adcenter_live.py` | 광고센터 화면 읽기 (로그인 · 표 파싱) |
 | `sources/ad_sheet.py` | 광고 시트 읽기/쓰기 (당일 탭 / 마감 탭) |
 | `sources/db_sheet.py` | 전환 시트 읽기 (서비스 계정) |
+| `sources/gsheets.py` | 시트 접속·탭 핸들 캐시 |
 | `sources/meta_api.py` | 메타 Marketing API 호출 · 전환 매칭 |
 | `sources/meta_table.py` | 메타 3단(캠페인·세트·소재) 집계 |
 | `parsers/adcenter_file.py` | 광고센터 다운로드 파일 파서 |
