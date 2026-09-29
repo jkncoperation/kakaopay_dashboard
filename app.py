@@ -26,7 +26,7 @@ sys.path.insert(0, str(HERE))
 
 from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E402
                           parse_pairs, stage_cell, summarize, unmatched_db)
-from core.util import today_kst  # noqa: E402
+from core.util import slot_key, today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import (ad_sheet, conversion_fixes, db_sheet,  # noqa: E402
                      meta_api, meta_table)
@@ -148,14 +148,16 @@ def load_db(start=None, end=None) -> pd.DataFrame:
     return d.reset_index(drop=True)
 
 
-@st.cache_data(ttl=600, show_spinner="메타에서 불러오는 중…")
-def load_meta_ads(start, end) -> pd.DataFrame:
+# slot 은 쓰지 않지만 캐시 키에 들어간다. 정각 10분 슬롯이 바뀌면 자동으로 다시 부른다.
+# ttl 은 슬롯이 어긋날 때를 대비한 보험.
+@st.cache_data(ttl=1800, show_spinner="메타에서 불러오는 중…")
+def load_meta_ads(start, end, slot: str) -> pd.DataFrame:
     return meta_api.fetch(start, end, token=conf("meta_token"),
                           account=conf("meta_account_id"))
 
 
-@st.cache_data(ttl=300, show_spinner="메타 전환 불러오는 중…")
-def load_meta_conv(start, end) -> pd.DataFrame:
+@st.cache_data(ttl=1800, show_spinner="메타 전환 불러오는 중…")
+def load_meta_conv(start, end, slot: str) -> pd.DataFrame:
     d = db_sheet.from_service_account(
         sheet_id=conf("db_sheet_id", db_sheet.DEFAULT_SHEET_ID), creds_info=sa_info(),
         keep_sources=meta_api.META_SOURCES)
@@ -425,7 +427,8 @@ def main() -> None:
     st.title("카카오페이 대시보드")
 
     c1, c2 = st.columns([1, 4])
-    if c1.button("새로고침", type="primary", help="구글 시트를 다시 읽어 화면을 갱신합니다"):
+    if c1.button("새로고침", type="primary",
+                 help="구글 시트와 메타 API 를 지금 다시 읽습니다"):
         st.cache_data.clear()
         st.rerun()
     today_df = load_ad(today_kst(), today_kst())
@@ -516,8 +519,9 @@ def main() -> None:
 
     with tabs[4]:
         try:
-            m_ads = load_meta_ads(d0, d1)
-            m_conv = load_meta_conv(d0, d1)
+            slot = slot_key(10)          # 지출과 전환을 같은 시점 기준으로 맞춘다
+            m_ads = load_meta_ads(d0, d1, slot)
+            m_conv = load_meta_conv(d0, d1, slot)
         except meta_api.MetaError as exc:
             st.error(str(exc))
             m_ads = m_conv = None
@@ -530,6 +534,8 @@ def main() -> None:
             else:
                 mg = meta_table.build(m_ads, m_conv)
                 v = meta_table.totals(mg)
+                st.caption(f"메타 API 기준 시각 **{slot}** · 매 10분 정각에 갱신됩니다. "
+                           "위 **새로고침** 을 누르면 곧바로 다시 불러옵니다.")
                 c = st.columns(5)
                 c[0].metric("지출", money(v["지출"]))
                 c[1].metric("총 전환수", f"{int(v['전환수'])}건")

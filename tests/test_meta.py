@@ -127,3 +127,20 @@ def test_credentials_adds_act_prefix(monkeypatch, tmp_path):
     monkeypatch.setenv("META_SYSTEM_USER_TOKEN", "t")
     monkeypatch.setenv("META_AD_ACCOUNT_ID", "123")
     assert meta_api.credentials()[1] == "act_123"
+
+
+# ---------------------------------------------------------------- 갱신 주기
+def test_slot_aligns_to_clock():
+    """'마지막 조회 후 10분' 이 아니라 :00 :10 :20 에 맞춰야 모두 같은 시점을 본다."""
+    from core.util import slot_key, slot_start
+    base = dt.datetime(2026, 9, 29, 14, 0)
+    same = [slot_key(10, base + dt.timedelta(minutes=m)) for m in (0, 3, 9)]
+    assert len(set(same)) == 1                       # 같은 슬롯이면 캐시 키가 같다
+    assert slot_key(10, base + dt.timedelta(minutes=10)) != same[0]
+    assert slot_start(10, dt.datetime(2026, 9, 29, 14, 37)).minute == 30
+    assert slot_start(10, dt.datetime(2026, 9, 29, 14, 37)).second == 0
+
+
+def test_slot_key_shape():
+    from core.util import slot_key
+    assert slot_key(10, dt.datetime(2026, 9, 29, 14, 25)) == "2026-09-29 14:20"

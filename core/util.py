@@ -6,7 +6,7 @@ import re
 from zoneinfo import ZoneInfo
 
 __all__ = ["to_num", "to_ratio", "norm_header", "parse_any_date", "dates_from_filename",
-           "today_kst", "now_kst", "KST"]
+           "today_kst", "now_kst", "KST", "slot_start", "slot_key"]
 
 _STRIP = ("원", "₩", ",", " ", " ", "회", "건", "명")
 
@@ -119,3 +119,19 @@ def today_kst() -> dt.date:
 
 def now_kst() -> dt.datetime:
     return dt.datetime.now(KST)
+
+
+def slot_start(interval_min: int = 10, now: dt.datetime | None = None) -> dt.datetime:
+    """지금이 속한 정각 슬롯의 시작 시각. 10분이면 :00 :10 :20 :30 :40 :50.
+
+    캐시 키에 이 값을 넣으면 "마지막 조회 후 N분" 이 아니라 시계에 맞춰 갱신된다.
+    그래야 누가 언제 열어도 같은 시점 데이터를 보고, 수집기 갱신 주기와 기준이 맞는다.
+    """
+    now = now or now_kst()
+    step = max(1, int(interval_min))
+    return now.replace(minute=now.minute - (now.minute % step), second=0, microsecond=0)
+
+
+def slot_key(interval_min: int = 10, now: dt.datetime | None = None) -> str:
+    """캐시 키로 쓸 슬롯 문자열. '2026-09-29 14:20'"""
+    return slot_start(interval_min, now).strftime("%Y-%m-%d %H:%M")
