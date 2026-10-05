@@ -97,12 +97,22 @@ def test_with_retry_reraises_if_still_failing():
         gsheets.with_retry(always_bad)
 
 
-def test_client_cached_per_credentials(monkeypatch):
+class FakeGC:
+    """gspread.Client 대역. set_timeout 을 받아 기록한다."""
+    def __init__(self):
+        self.timeout = None
+
+    def set_timeout(self, t):
+        self.timeout = t
+
+
+def patch_auth(monkeypatch) -> list:
+    """authorize/Credentials 를 가짜로 바꾸고, 만들어진 클라이언트 목록을 돌려준다."""
     made = []
 
     def fake_authorize(creds):
-        made.append(creds)
-        return object()
+        made.append(FakeGC())
+        return made[-1]
 
     monkeypatch.setattr(gsheets.gspread, "authorize", fake_authorize)
     monkeypatch.setattr(gsheets, "_CLIENTS", {})
@@ -113,7 +123,33 @@ def test_client_cached_per_credentials(monkeypatch):
 
     import google.oauth2.service_account as sa
     monkeypatch.setattr(sa, "Credentials", FakeCreds)
+    return made
+
+
+def test_client_cached_per_credentials(monkeypatch):
+    made = patch_auth(monkeypatch)
     info = {"client_email": "a@b.iam.gserviceaccount.com"}
     gsheets.client(info, "k.json", SCOPES)
     gsheets.client(info, "k.json", SCOPES)
     assert len(made) == 1                # 같은 계정이면 인증 한 번
+
+# ---------------------------------------------------------------- timeout
+def test_클라이언트에_timeout이_걸린다(monkeypatch):
+    """timeout 이 None 이면 응답 없는 요청을 영원히 기다려 '무한로딩' 이 된다."""
+    made = patch_auth(monkeypatch)
+    gc = gsheets.client({"client_email": "x@y.z"}, "none.json", SCOPES)
+    assert gc.timeout == gsheets.TIMEOUT
+    assert made[0].timeout is not None
+
+
+def test_timeout_값이_유한하다():
+    """(연결, 읽기) 둘 다 양수여야 한다."""
+    t = gsheets.TIMEOUT
+    assert isinstance(t, tuple) and len(t) == 2
+    assert all(isinstance(x, (int, float)) and x > 0 for x in t)
+
+
+def test_set_timeout이_실제_gspread에_있다():
+    """gspread 버전이 올라가 API 가 바뀌면 timeout 이 조용히 안 걸릴 수 있다."""
+    import gspread
+    assert hasattr(gspread.Client, "set_timeout")

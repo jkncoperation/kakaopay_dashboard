@@ -29,7 +29,7 @@ from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E4
                           parse_pairs, stage_cell, summarize, unmatched_db)
 from core.util import slot_key, today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
-from sources import (ad_sheet, conversion_fixes, db_sheet,  # noqa: E402
+from sources import (ad_sheet, conversion_fixes, db_sheet, gsheets,  # noqa: E402
                      meta_api, meta_table)
 
 st.set_page_config(page_title="리턴찬스 광고 대시보드", page_icon="📊", layout="wide")
@@ -148,6 +148,26 @@ def load_conv_all(slot: str) -> pd.DataFrame:
         keep_sources=None)                   # 전 매체를 한 번에
 
 
+def sheet_guard(fn, *args, **kwargs):
+    """시트 읽기 실패를 '무한로딩' 이 아니라 읽을 수 있는 오류로 바꾼다.
+
+    gspread 에 timeout 을 걸어 두었으니(sources/gsheets.TIMEOUT) 응답이 없으면 예외로
+    떨어진다. 그 예외를 그대로 두면 빨간 트레이스백만 나와 무엇을 해야 할지 알 수 없다.
+    캐시를 비우고 새로고침하면 대개 풀리므로 그 안내까지 함께 띄운다.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        st.error(f"구글 시트를 읽지 못했습니다: {type(exc).__name__}: {exc}")
+        st.caption("응답이 느리거나 끊긴 경우입니다. 아래 버튼으로 다시 시도해 보세요. "
+                   "계속되면 구글 시트 공유 설정(서비스 계정 권한)을 확인해 주세요.")
+        if st.button("캐시 비우고 다시 시도", key=f"retry_{id(fn)}"):
+            st.cache_data.clear()
+            gsheets.invalidate()
+            st.rerun()
+        st.stop()
+
+
 def _in_range(d: pd.DataFrame, start, end) -> pd.DataFrame:
     if start is not None:
         d = d[d["날짜"].notna() & (d["날짜"] >= start)]
@@ -182,7 +202,7 @@ def load_meta_conv(start, end) -> pd.DataFrame:
 
 
 def available_dates() -> list[str]:
-    df = load_ad()
+    df = sheet_guard(load_ad)
     return sorted({str(d) for d in df["날짜"].dropna()}, reverse=True) if len(df) else []
 
 
@@ -448,7 +468,7 @@ def kakaopay_view(dates: list[str]) -> None:
         rng = st.date_input("기간", (lo, hi), min_value=lo, max_value=max(hi, today))
         d0, d1 = (rng if isinstance(rng, tuple) and len(rng) == 2 else (lo, hi))
 
-    ad, db = load_ad(d0, d1), load_db(d0, d1)
+    ad, db = sheet_guard(load_ad, d0, d1), sheet_guard(load_db, d0, d1)
     if ad.empty:
         st.warning(f"{d0} ~ {d1} 구간에 광고 데이터가 없습니다. (보유: {dmin} ~ {dmax})")
         st.stop()
@@ -574,7 +594,7 @@ def main() -> None:
                  help="구글 시트와 메타 API 를 지금 다시 읽습니다"):
         st.cache_data.clear()
         st.rerun()
-    today_df = load_ad(today_kst(), today_kst())
+    today_df = sheet_guard(load_ad, today_kst(), today_kst())
     c2.caption(
         (f"카카오페이 오늘({today_kst()}) 데이터: **{len(today_df)}개 소재 · "
          f"지출 {today_df['소진비용'].sum():,.0f}원**" if len(today_df)

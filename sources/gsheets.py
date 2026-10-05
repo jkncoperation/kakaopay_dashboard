@@ -12,6 +12,11 @@
 
 핸들 캐시는 탭이 새로 만들어지거나 삭제되면 낡은 것을 들고 있을 수 있다. 그래서 호출부는
 `with_retry` 로 감싸 실패하면 캐시를 비우고 한 번 더 시도한다.
+
+**timeout 을 반드시 건다.** gspread 의 기본 timeout 은 None 이라 응답이 안 오면 영원히
+기다린다. 화면에는 오류도 안 뜨고 스피너만 도는 '무한로딩' 이 된다. 클라이언트를 캐시해
+오래 살려 두면 끊긴 연결을 재사용할 수 있어 더 그렇다. 시간이 지나면 예외로 떨어뜨려
+`with_retry` 가 새 연결로 다시 시도하게 한다.
 """
 from __future__ import annotations
 
@@ -19,6 +24,10 @@ import gspread
 
 _CLIENTS: dict = {}
 _WORKSHEETS: dict = {}
+
+# (연결, 읽기) 초. 시트 한 장이 1초쯤이라 읽기 30초면 넉넉하면서도
+# 멈춘 연결을 오래 붙들지 않는다.
+TIMEOUT = (10, 30)
 
 
 def _creds_key(creds_info: dict | None, creds_file: str, scopes) -> tuple:
@@ -42,8 +51,10 @@ def client(creds_info: dict | None, creds_file: str, scopes: list[str]):
         if not p.exists():
             raise FileNotFoundError(creds_file)
         creds = Credentials.from_service_account_file(str(p), scopes=scopes)
-    _CLIENTS[key] = gspread.authorize(creds)
-    return _CLIENTS[key]
+    gc = gspread.authorize(creds)
+    gc.set_timeout(TIMEOUT)          # 기본값 None(무한 대기) 을 반드시 덮는다
+    _CLIENTS[key] = gc
+    return gc
 
 
 def spreadsheet(sheet_id: str, creds_info, creds_file, scopes):
