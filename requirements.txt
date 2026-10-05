@@ -1,7 +1,9 @@
-streamlit>=1.36
+# Streamlit Cloud 가 이 파일로 환경을 만든다. 앱이 실제로 쓰는 것만 둔다.
+# 최소 버전은 '코드가 요구하는 기능' 기준이다. 낮게 두면 클라우드가 옛 버전을 집어
+# st.segmented_control / column_config(pinned, 픽셀 width) 가 없어 앱이 죽는다.
+streamlit>=1.45
 pandas>=2.0
-altair>=5.0
 openpyxl>=3.1
 gspread>=6.0
 google-auth>=2.0
-playwright>=1.45          # collect_live.py (광고센터 화면 수집)
+requests>=2.31

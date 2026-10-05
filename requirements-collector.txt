@@ -1,0 +1,6 @@
+# 수집기(collect_live.py)용 추가 패키지. 사무실 PC 에서만 필요하다.
+# 클라우드 앱은 브라우저를 띄우지 않으므로 requirements.txt 에 두지 않는다
+# (playwright 휠이 커서 배포 설치가 느려지고 실패 위험도 생긴다).
+-r requirements.txt
+playwright>=1.45
+pytest>=8.0
