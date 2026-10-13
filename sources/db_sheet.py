@@ -42,14 +42,20 @@ def status_flags(접수: str, 승인: str = "") -> dict[str, int]:
 
     깔때기라서 뒷단계는 앞단계를 포함한다 - 미팅확정된 건은 접수도 된 것으로 센다.
     그래서 접수 >= 미팅 이 된다. 승인은 '승인' 열, 나머지는 '접수' 열에서 본다.
+
+    **진행불가면 승인으로 세지 않는다.** 두 값이 다른 열에 있어서, 승인까지 갔다가
+    나중에 진행불가로 바뀐 건은 '접수' 열만 덮어써지고 '승인' 열에 승인 완료가 남는다.
+    그걸 그대로 세면 승인 1건인데 접수 0건인 행이 생겨 깔때기가 깨지고 승인이 부풀려진다.
+    (2026-10-06 kakaopay_ad1-6: 접수=소득미비 / 승인=승인 완료 -> 승인 3건으로 집계되던 건)
     """
     a = str(접수 or "").replace(" ", "")
     b = str(승인 or "").replace(" ", "")
+    nogo = bool(RX_NOGO.search(a))
     meet = bool(RX_MEET.search(a))
-    return {"진행불가": int(bool(RX_NOGO.search(a))),
+    return {"진행불가": int(nogo),
             "접수": int(bool(RX_RECV.search(a)) or meet),
             "미팅": int(meet),
-            "승인": int(bool(RX_APPR.search(b)))}
+            "승인": int(bool(RX_APPR.search(b)) and not nogo)}
 
 
 def status_bucket(접수: str, 승인: str = "") -> str:
