@@ -46,3 +46,18 @@ def test_late_start_still_closes_out():
 def test_custom_hour():
     assert closeout_due(at(2, 0), hour=3, done=None) is None
     assert closeout_due(at(3, 0), hour=3, done=None) == dt.date(2026, 9, 20)
+
+
+def test_실제_설정이_09시_마감이다():
+    """01시에는 광고센터 수치가 아직 덜 들어온다 — 자정 직후로 넘어오는 집계가 있다.
+    09시로 미뤄 전날이 확정된 뒤에 마감한다."""
+    import json
+    from pathlib import Path
+    cfg = json.loads((Path(__file__).resolve().parents[1] / "config.json")
+                     .read_text(encoding="utf-8"))
+    시각 = int(cfg.get("closeout_hour", 1))
+    assert 시각 == 9
+    assert closeout_due(at(8, 59), hour=시각, done=None) is None
+    assert closeout_due(at(9, 0), hour=시각, done=None) == dt.date(2026, 9, 20)
+    # 마감 전까지는 전날 데이터가 아직 마감 탭에 없다 — 하루 한 번은 지킨다
+    assert closeout_due(at(14, 0), hour=시각, done=dt.date(2026, 9, 21)) is None

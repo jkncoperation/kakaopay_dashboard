@@ -1,13 +1,19 @@
-"""리턴찬스 광고 대시보드 - 카카오페이 · 메타.
+"""리턴찬스 광고 대시보드 - 카카오페이 · 메타 · 카카오(메인/서브).
 
     streamlit run app.py
 
-맨 위에서 매체를 고른다. 두 매체는 데이터 출처와 집계 단위가 달라 화면을 나눠 뒀고,
+맨 위에서 매체를 고른다. 매체마다 데이터 출처와 집계 단위가 달라 화면을 나눠 뒀고,
 지표 열(지출·전환수·전환단가·진행불가·접수·미팅·승인·CPM·CTR·CPC·제출율)은 같다.
 
-    카카오페이  다운로드 파일 ─▶ 광고 시트(당일/마감) ─┐   세트 → 소재
-    메타        Marketing API ────────────────────────┤   캠페인 → 세트 → 소재
-                                전환(DB) 시트 ────────┴─▶ 소재명·번호로 매칭해 집계
+    카카오페이   다운로드 파일 ─▶ 광고 시트(당일/마감) ─┐  세트 → 소재
+    메타         Marketing API ───────────────────────┤  캠페인 → 세트 → 소재
+    카카오 메인   Moment API (802036) ────────────────┤  캠페인 → 세트 → 소재
+    카카오 서브   Moment API (928346) ────────────────┤  캠페인 → 세트 → 소재
+                                 전환(DB) 시트 ───────┴─▶ 소재명·번호로 매칭해 집계
+
+카카오 메인·서브는 전환 시트에서 모두 utm_source=kakao 다. 계정을 가르는 건 소재명뿐이라,
+한쪽 화면에서 다른 계정 소재의 전환은 '미매칭' 으로 잡힌다. 이번 세션에 조회해 본 계정의
+소재명을 기억해 두고 빼 준다(`_remember_kakao_names`).
 
 로컬에서는 `config.json` + `service_account.json`, Streamlit Cloud 에서는 Secrets 를 쓴다.
 코드 경로는 하나다.
@@ -30,7 +36,7 @@ from core.metrics import (BUCKETS, ad_metrics, build_creative_table,  # noqa: E4
 from core.util import slot_key, today_kst  # noqa: E402
 from parsers.adcenter_file import parse_adcenter_file  # noqa: E402
 from sources import (ad_sheet, conversion_fixes, db_sheet, gsheets,  # noqa: E402
-                     meta_api, meta_table)
+                     kakao_api, meta_api, meta_table)
 
 st.set_page_config(page_title="리턴찬스 광고 대시보드", page_icon="📊", layout="wide")
 
@@ -198,6 +204,20 @@ def load_meta_ads(start, end, slot: str) -> pd.DataFrame:
 def load_meta_conv(start, end) -> pd.DataFrame:
     """메타 전환. 카카오페이와 같은 공용 전환 표를 쓴다(두 번 내려받지 않는다)."""
     c = meta_api.conversions(load_conv_all(slot_key(CONV_SLOT_MIN)))
+    return _in_range(c, start, end).reset_index(drop=True)
+
+
+# 카카오모먼트는 소재 하나당 리포트를 한 번씩 불러야 해서(묶음 조회가 없다) 메타보다
+# 훨씬 느리다. 캐시를 30분 두고, 슬롯은 10분으로 메타와 같이 맞춘다.
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_kakao_ads(account: int, start, end, slot: str, scan_all: bool) -> pd.DataFrame:
+    return kakao_api.fetch(account, start, end, token=conf("kakao_token"),
+                           scan_all=scan_all)
+
+
+def load_kakao_conv(start, end) -> pd.DataFrame:
+    """카카오 전환. 카카오페이·메타와 같은 공용 전환 표를 쓴다."""
+    c = kakao_api.conversions(load_conv_all(slot_key(CONV_SLOT_MIN)))
     return _in_range(c, start, end).reset_index(drop=True)
 
 
@@ -382,28 +402,34 @@ def meta_rows(items: list[tuple[str, dict]], head: str) -> pd.DataFrame:
     return pd.DataFrame([stage_row({head: name}, v) for name, v in items])
 
 
-def meta_panel(g: pd.DataFrame, conv: pd.DataFrame) -> None:
+def meta_panel(g: pd.DataFrame, conv: pd.DataFrame, ns: str = "meta",
+               key=meta_api.match_key, extra_known: set | None = None,
+               um_help: str = "") -> None:
     """캠페인 -> 광고세트 -> 소재 3단 드릴다운.
 
-    메타는 캠페인/세트/소재가 따로라 카카오페이(세트 -> 소재)보다 한 단 깊다.
+    메타·카카오는 캠페인/세트/소재가 따로라 카카오페이(세트 -> 소재)보다 한 단 깊다.
     누른 자리를 session_state 에 담아 두고, 되돌아올 때 표 선택을 비운다.
-    """
-    st.session_state.setdefault("meta_camp", None)
-    st.session_state.setdefault("meta_set", None)
-    st.session_state.setdefault("meta_ver", 0)
-    camp, aset = st.session_state["meta_camp"], st.session_state["meta_set"]
 
-    def back(col, to_camp, to_set, label, key):
-        if col.button(label, key=key):
-            st.session_state["meta_camp"] = to_camp
-            st.session_state["meta_set"] = to_set
-            st.session_state["meta_ver"] += 1
+    ns: 매체별 이름공간. 메타에서 캠페인을 눌러 둔 상태가 카카오 화면에 따라오면 안 된다.
+    key: 소재명 -> 전환 매칭 키 (카카오는 꼬리표를 뗀다).
+    """
+    kc, ks, kv = f"{ns}_camp", f"{ns}_set", f"{ns}_ver"
+    st.session_state.setdefault(kc, None)
+    st.session_state.setdefault(ks, None)
+    st.session_state.setdefault(kv, 0)
+    camp, aset = st.session_state[kc], st.session_state[ks]
+
+    def back(col, to_camp, to_set, label, btn_key):
+        if col.button(label, key=f"{ns}_{btn_key}"):
+            st.session_state[kc] = to_camp
+            st.session_state[ks] = to_set
+            st.session_state[kv] += 1
             st.rerun()
 
-    def pick(table: pd.DataFrame, names: list[str], on_pick, key: str):
+    def pick(table: pd.DataFrame, names: list[str], on_pick, tbl_key: str):
         ev = st.dataframe(table, width="stretch", hide_index=True, column_config=META_CONFIG,
                           on_select="rerun", selection_mode="single-row",
-                          key=f"{key}{st.session_state['meta_ver']}")
+                          key=f"{ns}_{tbl_key}{st.session_state[kv]}")
         rows = list(getattr(getattr(ev, "selection", None), "rows", []) or [])
         if rows and rows[0] < len(names):
             on_pick(names[rows[0]])
@@ -412,7 +438,7 @@ def meta_panel(g: pd.DataFrame, conv: pd.DataFrame) -> None:
     # 3단: 소재
     if camp and aset:
         c1, c2 = st.columns([1, 5])
-        back(c1, camp, None, "← 광고세트", "meta_back2")
+        back(c1, camp, None, "← 광고세트", "back2")
         view = g[(g["캠페인"] == camp) & (g["광고세트"] == aset)]
         v = meta_table.totals(view)
         c2.markdown(f"**{camp}** › **{aset}** — 소재 {len(view)}개 · 지출 {v['지출']:,.0f}원 · "
@@ -425,7 +451,7 @@ def meta_panel(g: pd.DataFrame, conv: pd.DataFrame) -> None:
     # 2단: 광고세트
     if camp:
         c1, c2 = st.columns([1, 5])
-        back(c1, None, None, "← 캠페인", "meta_back1")
+        back(c1, None, None, "← 캠페인", "back1")
         view = g[g["캠페인"] == camp]
         v = meta_table.totals(view)
         c2.markdown(f"**{camp}** — 광고세트 {view['광고세트'].nunique()}개 · "
@@ -433,7 +459,7 @@ def meta_panel(g: pd.DataFrame, conv: pd.DataFrame) -> None:
         st.caption("광고세트를 클릭하면 그 세트의 소재로 들어갑니다.")
         items = meta_table.roll_up(view, ["광고세트"])
         pick(meta_rows(items, "광고세트"), [n for n, _ in items],
-             lambda n: st.session_state.__setitem__("meta_set", n), "meta_sets")
+             lambda n: st.session_state.__setitem__(ks, n), "sets")
         st.caption(METRIC_HELP)
         return
 
@@ -441,13 +467,14 @@ def meta_panel(g: pd.DataFrame, conv: pd.DataFrame) -> None:
     st.caption("캠페인을 클릭하면 광고세트 → 소재로 들어갑니다. 지출이 있는 캠페인만 나옵니다.")
     items = meta_table.roll_up(g, ["캠페인"])
     pick(meta_rows(items, "캠페인"), [n for n, _ in items],
-         lambda n: st.session_state.__setitem__("meta_camp", n), "meta_camps")
+         lambda n: st.session_state.__setitem__(kc, n), "camps")
     st.caption(METRIC_HELP)
 
-    um = meta_table.unmatched(g, conv)
+    um = meta_table.unmatched(g, conv, key=key, extra_known=extra_known)
     if len(um):
         with st.expander(f"광고 소재와 매칭되지 않은 전환 {len(um)}건"):
-            st.caption("소재명(utm_content)이 메타의 소재명과 다릅니다. 이름을 바꿨거나 삭제된 소재입니다.")
+            st.caption(um_help or "소재명(utm_content)이 광고의 소재명과 다릅니다. "
+                                  "이름을 바꿨거나 삭제된 소재입니다.")
             st.dataframe(um[["날짜", "utm_campaign", "utm_content", "구분"]],
                          width="stretch", hide_index=True)
 
@@ -537,38 +564,103 @@ def kakaopay_view(dates: list[str]) -> None:
                          width="stretch", hide_index=True)
 
 
-def meta_view() -> None:
-    """메타 - Marketing API + 전환 시트. 캠페인 → 광고세트 → 소재 3단."""
+# API 로 직접 가져오는 매체들. 모두 캠페인 -> 세트 -> 소재 3단이고 지표 열이 같다.
+#   ns          session_state 이름공간 (메타에서 눌러 둔 캠페인이 카카오에 따라오면 안 된다)
+#   매칭키      소재명 -> 전환 매칭 키. 카카오는 `_메인` 같은 꼬리표를 떼야 붙는다.
+API_CHANNELS = {
+    "메타":       {"ns": "meta",   "kind": "meta"},
+    "카카오 메인": {"ns": "kkmain", "kind": "kakao"},
+    "카카오 서브": {"ns": "kksub",  "kind": "kakao"},
+}
+
+KAKAO_UM_HELP = (
+    "소재명(utm_content)이 이 계정의 소재명과 다릅니다. 이름을 바꿨거나 삭제된 소재이거나, "
+    "**다른 카카오 계정(메인/서브)의 소재**입니다. 전환 시트에서는 두 계정이 모두 "
+    "utm_source=kakao 라 소재명으로만 구분됩니다.")
+
+
+def _remember_kakao_names(account: int, ads: pd.DataFrame) -> set:
+    """이번 세션에서 본 계정별 소재명 키를 기억해 둔다.
+
+    카카오 메인·서브 전환은 시트에서 구분이 없다. 그래서 메인 화면에서 서브 계정 소재의
+    전환이 '미매칭' 으로 뜬다. 다른 계정에서 이미 설명된 소재명은 빼 주려고,
+    조회해 본 계정의 소재명을 모아 둔다. (안 본 계정은 알 수 없으니 그대로 남는다.)
+    """
+    seen = st.session_state.setdefault("kakao_names", {})
+    seen[account] = {kakao_api.match_key(n) for n in ads["소재"].unique()} if len(ads) else set()
+    others = set()
+    for acct, names in seen.items():
+        if acct != account:
+            others |= names
+    return others
+
+
+def api_view(label: str) -> None:
+    """메타 / 카카오 메인 / 카카오 서브 - API + 전환 시트. 캠페인 → 광고세트 → 소재 3단."""
+    spec = API_CHANNELS[label]
+    ns, kind = spec["ns"], spec["kind"]
     today = today_kst()
+
     mode = st.radio("조회 모드", ["당일", "일별", "기간"], horizontal=True, index=0,
-                    key="meta_mode")
+                    key=f"{ns}_mode")
     if mode == "당일":
         d0 = d1 = today
     elif mode == "일별":
-        d0 = d1 = st.date_input("날짜", value=today, max_value=today, key="meta_day")
+        d0 = d1 = st.date_input("날짜", value=today, max_value=today, key=f"{ns}_day")
     else:
         rng = st.date_input("기간", (today - dt.timedelta(days=13), today),
-                            max_value=today, key="meta_range")
+                            max_value=today, key=f"{ns}_range")
         d0, d1 = (rng if isinstance(rng, tuple) and len(rng) == 2
                   else (today - dt.timedelta(days=13), today))
 
+    scan_all = False
+    if kind == "kakao":
+        scan_all = st.checkbox(
+            "꺼진 캠페인까지 확인 (느림)", value=False, key=f"{ns}_scan",
+            help="카카오는 소재 하나당 리포트를 한 번씩 불러야 해서 느립니다. 기본은 "
+                 "켜져 있는 캠페인만 봅니다. 지난 날짜에 이미 끝난 캠페인의 지출까지 "
+                 "보려면 켜 주세요 (계정에 따라 10분 이상 걸릴 수 있습니다).")
+
+    slot = slot_key(10)                  # 지출과 전환을 같은 시점 기준으로 맞춘다
     try:
-        slot = slot_key(10)              # 지출과 전환을 같은 시점 기준으로 맞춘다
-        ads = load_meta_ads(d0, d1, slot)
-        conv = load_meta_conv(d0, d1)
-    except meta_api.MetaError as exc:
+        if kind == "meta":
+            with st.spinner("메타에서 불러오는 중…"):
+                ads = load_meta_ads(d0, d1, slot)
+            conv, key = load_meta_conv(d0, d1), meta_api.match_key
+            extra_known = None
+        else:
+            account = kakao_api.accounts(conf("kakao_accounts", {})).get(label)
+            if not account:
+                st.error(f"{label} 의 광고계정 ID 를 찾을 수 없습니다.")
+                return
+            with st.spinner("카카오모먼트에서 불러오는 중… "
+                            "(소재 하나씩 조회해야 해서 몇 분 걸릴 수 있습니다)"):
+                ads = load_kakao_ads(account, d0, d1, slot, scan_all)
+            conv, key = load_kakao_conv(d0, d1), kakao_api.match_key
+            extra_known = _remember_kakao_names(account, ads)
+    except (meta_api.MetaError, kakao_api.KakaoError) as exc:
         st.error(str(exc))
         return
     except Exception as exc:
-        st.error(f"메타 데이터를 가져오지 못했습니다: {exc}")
+        st.error(f"{label} 데이터를 가져오지 못했습니다: {exc}")
         return
 
     if ads.empty:
         st.info(f"{d0}" + (f" ~ {d1}" if d1 != d0 else "") +
-                " 구간에 지출이 있는 메타 광고가 없습니다.")
+                f" 구간에 지출이 있는 {label} 광고가 없습니다."
+                + ("" if scan_all or kind != "kakao"
+                   else " (켜져 있는 캠페인만 확인했습니다. 위 체크박스로 꺼진 캠페인까지 볼 수 있습니다.)"))
         return
 
-    g = meta_table.build(ads, conv)
+    # 꼬리표를 뗀 뒤 서로 다른 소재가 한 키로 합쳐지면 전환이 엉뚱한 곳에 붙을 수 있다.
+    if kind == "kakao":
+        bad = kakao_api.key_collisions(ads["소재"].unique())
+        if bad:
+            줄 = [f"- {' / '.join(v)}" for v in list(bad.values())[:5]]
+            st.warning("소재명 꼬리표를 떼면 겹치는 이름이 있습니다. "
+                       "전환이 한쪽으로 몰릴 수 있습니다:\n\n" + "\n".join(줄))
+
+    g = meta_table.build(ads, conv, key=key)
     v = meta_table.totals(g)
     c = st.columns(5)
     c[0].metric("지출", money(v["지출"]))
@@ -580,8 +672,12 @@ def meta_view() -> None:
                f" · 캠페인 {g['캠페인'].nunique()}개 · 광고세트 {g['광고세트'].nunique()}개 · "
                f"소재 {len(g)}개  |  지출 기준 **{slot}** (10분 정각) · "
                f"전환 기준 **{slot_key(CONV_SLOT_MIN)}** ({CONV_SLOT_MIN}분). "
-               "위 **새로고침** 을 누르면 곧바로 다시 불러옵니다.")
-    meta_panel(g, conv)
+               "위 **새로고침** 을 누르면 곧바로 다시 불러옵니다."
+               + ("" if kind != "kakao" else
+                  ("  |  꺼진 캠페인까지 확인했습니다." if scan_all
+                   else "  |  **켜져 있는 캠페인만** 확인했습니다 (위 체크박스로 전체 확인).")))
+    meta_panel(g, conv, ns=ns, key=key, extra_known=extra_known,
+               um_help=KAKAO_UM_HELP if kind == "kakao" else "")
 
 
 def main() -> None:
@@ -603,11 +699,11 @@ def main() -> None:
 
     # 매체를 맨 위에서 고른다. 카카오페이(시트)와 메타(API)는 데이터 출처·집계 단위가
     # 달라서, 한 탭 줄에 섞으면 소재별/세트별이 어느 매체 것인지 헷갈린다.
-    channel = st.segmented_control("매체", ["카카오페이", "메타"], default="카카오페이",
-                                   key="channel") or "카카오페이"
+    channel = st.segmented_control("매체", ["카카오페이", *API_CHANNELS],
+                                   default="카카오페이", key="channel") or "카카오페이"
 
-    if channel == "메타":
-        meta_view()
+    if channel in API_CHANNELS:
+        api_view(channel)
         return
 
     dates = available_dates()
