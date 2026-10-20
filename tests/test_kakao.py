@@ -576,3 +576,48 @@ def test_우선순위_기억_켜짐_꺼짐_순():
          ({}, {"id": 8, "config": "OFF"}), ({}, {"id": 2, "config": "ON"})]
     순서 = [cr["id"] for _, cr in kakao_api.prioritize(쌍, 기억=[8])]
     assert 순서 == [8, 1, 2, 9]
+
+
+# ---------------------------------------------------------------- 당일 오차 허용
+def test_오늘은_단계별_리포트_오차를_허용한다():
+    """실측: 캠페인 476,235 vs 소재 합계 474,608 (0.3%). 집계가 늘어나는 중이라 어긋난다.
+
+    이걸 '모자라다' 로 보면 매번 느린 길로 떨어져 메인 계정이 542초까지 늘어났다.
+    """
+    T = kakao_api.today_kst()
+    여유 = kakao_api._allowance(500000.0, 1.0, T, T)
+    assert 여유 == 10000.0                      # 2%
+
+
+def test_지난_날짜는_1원까지_맞춘다():
+    """집계가 멈춰 있어 오차를 줄 이유가 없다. 여기서 느슨하면 누락을 놓친다."""
+    T = kakao_api.today_kst()
+    여유 = kakao_api._allowance(500000.0, 1.0, T - dt.timedelta(3), T - dt.timedelta(1))
+    assert 여유 == 1.0
+
+
+def test_진짜_누락은_오차_허용으로도_걸린다():
+    """서브 계정 10/19 의 57%(312,420원) 누락은 2% 를 한참 넘는다."""
+    T = kakao_api.today_kst()
+    목표, 설명 = 543859.0, 231439.0
+    assert 설명 < 목표 - kakao_api._allowance(목표, 1.0, T, T)
+
+
+def test_오늘_조회에서_작은_오차는_빠른_길을_통과시킨다(monkeypatch):
+    """기억한 소재 합계가 캠페인 합계보다 0.3% 적어도 세트 리포트를 부르지 않아야 한다."""
+    api = FakeApi(캠페인지출=476235.0, 소재지출={1: 474608.0, 2: 0.0, 3: 0.0})
+    api.install(monkeypatch, 소재목록)
+    kakao_api.remember(9, 1, 1)
+    T = kakao_api.today_kst()
+    보낸 = []
+    원래 = api._get
+
+    def 감시(path, *a, **k):
+        보낸.append(path)
+        return 원래(path, *a, **k)
+
+    monkeypatch.setattr(kakao_api, "_get", 감시)
+    ads = kakao_api.fetch(9, T, T)
+    assert "/adGroups/report" not in 보낸, "작은 오차 때문에 느린 길로 떨어졌다"
+    assert ads["지출"].sum() == 474608.0
+    assert ads.attrs["누락"] == []              # 0.3% 는 누락으로 보고하지 않는다

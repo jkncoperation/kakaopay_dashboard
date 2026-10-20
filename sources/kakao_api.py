@@ -30,9 +30,16 @@
 
         빠른 길  지난번 지출이 있던 소재(_SPENDERS) 를 먼저 부르고 캠페인 리포트
                  한 번으로 검증한다. 지출은 소재 몇 개에 몰려 있고 구성이 잘 안 바뀌어서
-                 대개 여기서 끝난다.                         메인 당일 7회 27초
+                 대개 여기서 끝난다.        메인 당일 리포트 5회 27초 (세트 리포트 0회)
         느린 길  기억이 없거나(첫 조회) 기억으로 부족하면 세트 지출로 범위를 좁힌다.
-                 세트 리포트가 세트 수만큼 드는 게 값이다.    메인 당일 12회 57초
+                 세트 리포트가 세트 수만큼 드는 게 값이다.   메인 당일 리포트 10회 54초
+
+      **당일은 1원까지 맞추려 하면 안 된다.** 집계가 늘어나는 중이라 단계별 리포트가
+      서로 어긋난다(실측: 캠페인 476,235 vs 소재 합계 474,608, 0.3%). 처음엔 정확히
+      일치를 요구해서 빠른 길이 매번 실패했고, 메인 계정이 542초까지 늘어났다.
+      그래서 오늘이 걸친 조회에만 2% 오차를 준다(`_allowance`). 지난 날짜는 집계가
+      멈춰 있어 1원까지 맞으므로 그대로 엄격하게 둔다 - 서브 계정 10/19 의 57% 누락은
+      그 엄격한 쪽에서 걸렸고, 2% 오차로도 걸린다.
 
       프로파일 결과가 이 설계를 정했다. 메인 당일 51초 중 세트 리포트 6회가 27.5초(54%)로
       가장 컸고, 목록 조회(campaigns/adGroups/creatives) 는 0.8초로 싸다. 호출 제한이
@@ -237,6 +244,22 @@ def _spend(rows: list[dict]) -> float:
     return float(sum((r.get("metrics") or {}).get("cost") or 0 for r in rows))
 
 
+# 당일은 집계가 실시간으로 늘어나는 중이라 단계(캠페인/세트/소재) 별 리포트가 서로 조금씩
+# 어긋난다. 실측: 캠페인 476,235 vs 소재 합계 474,608 (0.3%). 이걸 '모자라다' 로 보면
+# 매번 느린 길로 떨어져 메인 계정이 542초까지 늘어났다.
+#
+# 지난 날짜는 집계가 멈춰 있어 1원까지 맞는다. 그래서 오차는 **오늘이 걸친 조회에만**
+# 허용한다. 서브 계정 10/19 의 57% 누락처럼 진짜 빠진 것은 2% 를 한참 넘어 그대로 걸린다.
+TODAY_TOLERANCE = 0.02
+
+
+def _allowance(목표: float, min_spend: float, start: dt.date, end: dt.date) -> float:
+    """합계가 '다 설명됐다' 고 볼 여유. 오늘이 걸린 조회만 비율 오차를 준다."""
+    if start <= today_kst() <= end:
+        return max(min_spend, abs(목표) * TODAY_TOLERANCE)
+    return min_spend
+
+
 # ---------------------------------------------------------------- 가져오기
 def order_creatives(items: list[dict]) -> list[dict]:
     """소재를 '부를 순서' 로 세운다. 켜져 있는 것 먼저.
@@ -358,7 +381,8 @@ def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
             목표 = _spend(camp_rows)
             if 목표 < min_spend:
                 continue
-            if sum(_spend(소재조회(cid)) for cid in 기억) < 목표 - min_spend:
+            if (sum(_spend(소재조회(cid)) for cid in 기억)
+                    < 목표 - _allowance(목표, min_spend, start, end)):
                 목표 = None            # 기억으로 부족하다 -> 세트별로 좁힌다
 
         if 목표 is None:
@@ -372,9 +396,9 @@ def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
                 목표 += 세트지출
                 if 세트지출 < min_spend:
                     continue           # 이 세트는 소재를 부를 필요가 없다
-                세트설명 = 0.0
+                세트설명, 여유 = 0.0, _allowance(세트지출, min_spend, start, end)
                 for cr in order_creatives(세트소재[g["id"]]):
-                    if 세트설명 >= 세트지출 - min_spend:
+                    if 세트설명 >= 세트지출 - 여유:
                         break          # 이 세트 지출이 다 설명됐다
                     세트설명 += _spend(소재조회(cr["id"]))
 
@@ -400,7 +424,7 @@ def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
                 })
 
         남은지출 = 목표 - 설명된지출
-        if 남은지출 >= min_spend:
+        if 남은지출 >= _allowance(목표, min_spend, start, end):
             # 소재를 다 불렀는데도 합계가 안 맞는다 (삭제된 소재 등).
             # 조용히 넘기면 지출이 비므로 호출부가 알 수 있게 모아 둔다.
             missing.append({"광고세트": str(c.get("name", "")).strip(),
