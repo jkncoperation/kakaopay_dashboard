@@ -365,6 +365,54 @@ def match_key(name) -> str:
     return s.strip()
 
 
+def creative_index(account: int, token: str | None = None) -> set[str]:
+    """그 계정의 **모든** 소재명 매칭 키. 꺼진 캠페인·꺼진 소재까지 전부.
+
+    지출 조회(`fetch`) 와 달리 리포트를 부르지 않고 목록만 훑으므로 싸다.
+    서브 계정(캠페인 2개·소재 39종) 은 6회면 끝난다. 구조는 자주 바뀌지 않아
+    길게 캐시해 두고 쓴다.
+
+    쓰는 곳: 전환을 어느 계정 것으로 볼지 가르는 데 쓴다. 전환 시트에는 메인·서브가
+    모두 utm_source=kakao 로 들어와서, 이 목록이 없으면 메인 화면에 서브 전환이
+    '미매칭' 으로 쏟아진다(10/14~20 기준 63건). 반대도 마찬가지(335건).
+    """
+    tok = credentials(token)
+    out: set[str] = set()
+    for c in campaigns(account, tok):
+        for g in ad_groups(account, tok, c["id"]):
+            for cr in creatives(account, tok, g["id"]):
+                out.add(match_key(cr.get("name")))
+    return out
+
+
+def split_conversions(conv: pd.DataFrame, account: int, primary: int,
+                      indexes: dict[int, set[str]]) -> pd.DataFrame:
+    """카카오 전환을 계정별로 나눈다.
+
+    두 계정이 전환 시트에서 구분되지 않으니, 소재명 목록으로 가른다.
+
+        지정 계정(primary) 이 아닌 계정  -> 자기 소재명 목록에 '있는' 것
+        지정 계정(primary)              -> 다른 계정 목록에 '없는' 나머지 전부
+
+    지정 계정을 나머지로 두는 이유는 호출 수다. 메인 계정은 캠페인이 21개라 소재명
+    목록을 만드는 데도 수십 번 호출이 필요하다. 작은 계정만 목록을 만들고 큰 계정은
+    여집합으로 두면, 두 계정이 전환을 빠짐없이 한 번씩 나눠 갖는다.
+
+    어느 계정 소재도 아닌 전환(삭제된 소재 등) 은 지정 계정 쪽에 남아 '미매칭' 으로
+    보인다. 조용히 사라지는 것보다 눈에 띄는 쪽이 낫다.
+    """
+    if conv is None or conv.empty:
+        return conv
+    others: set[str] = set()
+    for acct, names in indexes.items():
+        if acct != primary:
+            others |= names
+    if account == primary:
+        return conv[~conv["key"].isin(others)].reset_index(drop=True)
+    mine = indexes.get(account) or set()
+    return conv[conv["key"].isin(mine)].reset_index(drop=True)
+
+
 def conversions(db: pd.DataFrame) -> pd.DataFrame:
     """전환 시트에서 카카오 건만 골라 매칭 키를 붙인다.
 

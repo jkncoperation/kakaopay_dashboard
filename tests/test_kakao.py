@@ -438,3 +438,85 @@ def test_클라우드_Secrets_가_올바른_TOML_이다(tmp_path, monkeypatch):
     assert d["kakao_token"] == "토큰값"
     assert d["kakao_accounts"]["카카오 메인"] == 802036
     assert d["kakao_accounts"]["카카오 서브"] == 928346
+
+
+# ---------------------------------------------------------------- 계정별 전환 분리
+def _conv(contents):
+    d = pd.DataFrame({
+        "날짜": [dt.date(2026, 10, 19)] * len(contents),
+        "utm_source": ["kakao"] * len(contents),
+        "utm_campaign": ["세트"] * len(contents),
+        "utm_content": contents,
+        "진행불가": [0] * len(contents), "접수": [1] * len(contents),
+        "미팅": [0] * len(contents), "승인": [0] * len(contents),
+        "구분": ["접수"] * len(contents)})
+    d["key"] = d["utm_content"].map(kakao_api.match_key)
+    return d
+
+
+메인소재 = "[비즈니스폼+] new kakao3_1029x258"
+서브소재 = "법무법인 평온 - kakao13_1029x258"
+유령소재 = "삭제된_소재_xyz"
+MAIN, SUB = 802036, 928346
+IDX = {SUB: {kakao_api.match_key(서브소재)}}
+
+
+def test_서브는_자기_소재명_목록에_있는_전환만():
+    conv = _conv([메인소재, 서브소재, 서브소재, 유령소재])
+    out = kakao_api.split_conversions(conv, SUB, primary=MAIN, indexes=IDX)
+    assert list(out["utm_content"]) == [서브소재, 서브소재]
+
+
+def test_메인은_다른_계정_목록에_없는_나머지_전부():
+    """메인은 캠페인이 21개라 소재명 목록을 만들지 않는다. 여집합으로 가져간다."""
+    conv = _conv([메인소재, 서브소재, 서브소재, 유령소재])
+    out = kakao_api.split_conversions(conv, MAIN, primary=MAIN, indexes=IDX)
+    assert sorted(out["utm_content"]) == sorted([메인소재, 유령소재])
+
+
+def test_두_계정이_전환을_빠짐없이_한_번씩_나눠_갖는다():
+    """어느 쪽에도 안 들어가거나 양쪽에 중복되면 집계가 틀어진다.
+
+    split_conversions 는 인덱스를 다시 매기므로, 행을 알아볼 표시를 붙여 비교한다.
+    """
+    conv = _conv([메인소재, 서브소재, 유령소재, 메인소재, 서브소재])
+    conv["행번호"] = range(len(conv))
+    메인것 = kakao_api.split_conversions(conv, MAIN, primary=MAIN, indexes=IDX)
+    서브것 = kakao_api.split_conversions(conv, SUB, primary=MAIN, indexes=IDX)
+
+    메인행, 서브행 = set(메인것["행번호"]), set(서브것["행번호"])
+    assert not (메인행 & 서브행), "같은 전환이 두 계정에 중복 집계된다"
+    assert 메인행 | 서브행 == set(conv["행번호"]), "어느 계정에도 안 들어간 전환이 있다"
+    assert 서브행 == {1, 4}
+
+
+def test_꼬리표가_달라도_계정이_갈린다():
+    """지출 쪽 소재명은 `법무법인 평온 - kakao13_1029x258 / 메인` 처럼 꼬리표가 붙어 있다."""
+    idx = {SUB: {kakao_api.match_key("법무법인 평온 - kakao13_1029x258 / 메인")}}
+    conv = _conv([서브소재])
+    out = kakao_api.split_conversions(conv, SUB, primary=MAIN, indexes=idx)
+    assert len(out) == 1
+
+
+def test_빈_전환표는_그대로():
+    assert kakao_api.split_conversions(None, SUB, MAIN, IDX) is None
+    빈 = _conv([]).iloc[0:0]
+    assert kakao_api.split_conversions(빈, SUB, MAIN, IDX).empty
+
+
+def test_소재명_목록은_꺼진_캠페인까지_모은다(monkeypatch):
+    """지출 조회는 켜진 캠페인만 보지만, 전환을 가르는 목록은 전부여야 한다.
+
+    서브 계정은 꺼진 캠페인(소재 13개) + 켜진 캠페인(27개) = 39종이다.
+    꺼진 쪽을 빼면 그 소재의 전환이 메인 쪽으로 잘못 넘어간다.
+    """
+    monkeypatch.setattr(kakao_api, "credentials", lambda token=None: "tok")
+    monkeypatch.setattr(kakao_api, "campaigns", lambda a, t: [
+        {"id": 1, "name": "꺼진캠페인", "config": "OFF"},
+        {"id": 2, "name": "켜진캠페인", "config": "ON"}])
+    monkeypatch.setattr(kakao_api, "ad_groups",
+                        lambda a, t, cid: [{"id": cid * 10, "config": "OFF"}])
+    monkeypatch.setattr(kakao_api, "creatives", lambda a, t, gid: [
+        {"id": gid, "name": f"소재{gid}_메인", "config": "OFF"}])
+    idx = kakao_api.creative_index(9)
+    assert idx == {"소재10", "소재20"}        # 꼬리표를 뗀 키로, 꺼진 캠페인 것도 들어 있다

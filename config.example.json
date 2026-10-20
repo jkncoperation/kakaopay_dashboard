@@ -17,5 +17,6 @@
     "size": 100,
     "align_to_clock": true
   },
-  "closeout_hour": 1
+  "closeout_hour": 1,
+  "kakao_primary": "카카오 메인"
 }

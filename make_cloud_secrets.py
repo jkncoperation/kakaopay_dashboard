@@ -66,6 +66,8 @@ def main() -> int:
         f"meta_account_id = {q(META.get('META_AD_ACCOUNT_ID', ''))}",
         # 카카오모먼트 토큰은 만료되지 않으므로 한 번 넣어 두면 된다.
         f"kakao_token = {q(cfg.get('kakao_token', ''))}",
+        # 소재명 목록을 만들지 않고 '나머지 전환' 을 가져갈 계정 (캠페인이 많은 쪽)
+        f"kakao_primary = {q(cfg.get('kakao_primary', '카카오 메인'))}",
         "",
         "[kakao_accounts]",
         # 키에 공백이 있으면(`카카오 메인`) TOML 에서 반드시 따옴표로 감싸야 한다.

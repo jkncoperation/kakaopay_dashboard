@@ -12,8 +12,13 @@
                                  전환(DB) 시트 ───────┴─▶ 소재명·번호로 매칭해 집계
 
 카카오 메인·서브는 전환 시트에서 모두 utm_source=kakao 다. 계정을 가르는 건 소재명뿐이라,
-한쪽 화면에서 다른 계정 소재의 전환은 '미매칭' 으로 잡힌다. 이번 세션에 조회해 본 계정의
-소재명을 기억해 두고 빼 준다(`_remember_kakao_names`).
+각 계정의 소재명 목록으로 전환을 나눠 갖는다(`kakao_conv_for`).
+
+    카카오 서브   자기 소재명 목록에 '있는' 전환        (목록을 만든다 - 6회 호출)
+    카카오 메인   다른 계정 목록에 '없는' 나머지 전환   (캠페인 21개라 목록을 안 만든다)
+
+이렇게 하면 두 계정이 전환을 빠짐없이 한 번씩 나눠 가진다. 어느 쪽 소재도 아닌 전환은
+메인 쪽 '미매칭' 에 남아 눈에 띈다. 누가 '나머지' 를 가져갈지는 `kakao_primary` 로 정한다.
 
 로컬에서는 `config.json` + `service_account.json`, Streamlit Cloud 에서는 Secrets 를 쓴다.
 코드 경로는 하나다.
@@ -220,6 +225,31 @@ def load_kakao_conv(start, end) -> pd.DataFrame:
     """카카오 전환. 카카오페이·메타와 같은 공용 전환 표를 쓴다."""
     c = kakao_api.conversions(load_conv_all(slot_key(CONV_SLOT_MIN)))
     return _in_range(c, start, end).reset_index(drop=True)
+
+
+# 소재명 목록은 구조라서 자주 바뀌지 않는다. 6시간 캐시. 리포트를 안 부르므로 싸다
+# (서브 계정 6회). 전환을 어느 계정 것으로 볼지 가르는 데만 쓴다.
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_kakao_index(account: int) -> set:
+    return kakao_api.creative_index(account, token=conf("kakao_token"))
+
+
+def kakao_primary(accts: dict) -> int:
+    """소재명 목록을 만들지 않고 '나머지' 를 가져갈 계정. 캠페인이 많은 쪽을 둔다."""
+    이름 = conf("kakao_primary", "카카오 메인")
+    return int(accts.get(이름) or next(iter(accts.values())))
+
+
+def kakao_conv_for(account: int, accts: dict, conv: pd.DataFrame):
+    """그 계정 몫의 전환만 남긴다. (전환, 다른계정이름들) 을 돌려준다."""
+    primary = kakao_primary(accts)
+    indexes = {a: load_kakao_index(a) for a in accts.values() if a != primary}
+    mine = kakao_api.split_conversions(conv, account, primary, indexes)
+    남 = set()
+    for a, names in indexes.items():
+        if a != account:
+            남 |= names
+    return mine, 남
 
 
 def available_dates() -> list[str]:
@@ -575,25 +605,9 @@ API_CHANNELS = {
 }
 
 KAKAO_UM_HELP = (
-    "소재명(utm_content)이 이 계정의 소재명과 다릅니다. 이름을 바꿨거나 삭제된 소재이거나, "
-    "**다른 카카오 계정(메인/서브)의 소재**입니다. 전환 시트에서는 두 계정이 모두 "
-    "utm_source=kakao 라 소재명으로만 구분됩니다.")
-
-
-def _remember_kakao_names(account: int, ads: pd.DataFrame) -> set:
-    """이번 세션에서 본 계정별 소재명 키를 기억해 둔다.
-
-    카카오 메인·서브 전환은 시트에서 구분이 없다. 그래서 메인 화면에서 서브 계정 소재의
-    전환이 '미매칭' 으로 뜬다. 다른 계정에서 이미 설명된 소재명은 빼 주려고,
-    조회해 본 계정의 소재명을 모아 둔다. (안 본 계정은 알 수 없으니 그대로 남는다.)
-    """
-    seen = st.session_state.setdefault("kakao_names", {})
-    seen[account] = {kakao_api.match_key(n) for n in ads["소재"].unique()} if len(ads) else set()
-    others = set()
-    for acct, names in seen.items():
-        if acct != account:
-            others |= names
-    return others
+    "**이 계정의 전환 중** 지출 조회 범위에 없는 소재로 들어온 것입니다. 다른 카카오 계정의 "
+    "전환은 이미 걸러져 여기 나오지 않습니다. 대개 그 기간에 지출이 없던 소재이거나, "
+    "꺼진 캠페인의 소재입니다 — 위 **꺼진 캠페인까지 확인** 을 켜면 집계에 들어옵니다.")
 
 
 def api_view(label: str) -> None:
@@ -630,7 +644,8 @@ def api_view(label: str) -> None:
             conv, key = load_meta_conv(d0, d1), meta_api.match_key
             extra_known = None
         else:
-            account = kakao_api.accounts(conf("kakao_accounts", {})).get(label)
+            accts = kakao_api.accounts(conf("kakao_accounts", {}))
+            account = accts.get(label)
             if not account:
                 st.error(f"{label} 의 광고계정 ID 를 찾을 수 없습니다.")
                 return
@@ -643,8 +658,11 @@ def api_view(label: str) -> None:
                      for m in 누락[:5]]
                 st.warning("세트 지출이 소재 합계보다 큽니다. 삭제된 소재의 지출일 수 "
                            "있습니다:\n\n" + "\n".join(줄))
-            conv, key = load_kakao_conv(d0, d1), kakao_api.match_key
-            extra_known = _remember_kakao_names(account, ads)
+            전체전환 = load_kakao_conv(d0, d1)
+            conv, extra_known = kakao_conv_for(account, accts, 전체전환)
+            key = kakao_api.match_key
+            st.caption(f"카카오 전환 {len(전체전환)}건 중 **이 계정 몫 {len(conv)}건** "
+                       f"(계정은 소재명으로 가릅니다)")
     except (meta_api.MetaError, kakao_api.KakaoError) as exc:
         st.error(str(exc))
         return
