@@ -64,6 +64,11 @@ def main() -> int:
         'db_sheet_id = "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4"',
         f"meta_token = {q(META.get('META_SYSTEM_USER_TOKEN', ''))}",
         f"meta_account_id = {q(META.get('META_AD_ACCOUNT_ID', ''))}",
+        # 카카오모먼트 토큰은 만료되지 않으므로 한 번 넣어 두면 된다.
+        f"kakao_token = {q(cfg.get('kakao_token', ''))}",
+        "",
+        "[kakao_accounts]",
+    ] + [f"{k} = {int(v)}" for k, v in (cfg.get("kakao_accounts") or {}).items()] + [
         "",
         "[gcp_service_account]",
     ] + [f"{k} = {q(sa[k])}" for k in KEYS if k in sa]

@@ -359,3 +359,49 @@ def test_지출없는_세트는_소재를_아예_부르지_않는다(monkeypatch
     api.install(monkeypatch, 소재목록)
     ads = kakao_api.fetch(9, *_어제())
     assert api.불린소재 == [] and ads.empty
+
+
+# ---------------------------------------------------------------- 토큰 출처
+def test_토큰은_대시보드_설정에서_읽는다(monkeypatch, tmp_path):
+    """kakao_bizform 폴더는 은퇴했다. 그 폴더가 없어도 돌아가야 한다."""
+    monkeypatch.delenv("KAKAO_ACCESS_TOKEN", raising=False)
+    (tmp_path / "config.json").write_text('{"kakao_token": "내토큰"}', encoding="utf-8")
+    monkeypatch.setattr(kakao_api, "HERE", tmp_path)
+    assert kakao_api.credentials() == "내토큰"
+
+
+def test_넘긴_토큰이_설정보다_우선(monkeypatch, tmp_path):
+    """클라우드에서는 app 이 Secrets 값을 인자로 넘긴다."""
+    (tmp_path / "config.json").write_text('{"kakao_token": "파일것"}', encoding="utf-8")
+    monkeypatch.setattr(kakao_api, "HERE", tmp_path)
+    assert kakao_api.credentials("넘긴것") == "넘긴것"
+
+
+def test_레거시_폴더가_없어도_안내만_하고_끝난다(monkeypatch, tmp_path):
+    monkeypatch.delenv("KAKAO_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(kakao_api, "HERE", tmp_path / "없는폴더")
+    with pytest.raises(kakao_api.KakaoError) as e:
+        kakao_api.credentials()
+    assert "kakao_token" in str(e.value)
+
+
+def test_401은_만료가_아니라고_안내한다(monkeypatch):
+    """이 토큰은 만료되지 않는다. '만료' 라고 안내하면 엉뚱한 곳을 보게 된다."""
+    class R:
+        status_code = 401
+        text = "unauthorized"
+
+    class FakeRequests:
+        class RequestException(Exception):
+            pass
+
+        @staticmethod
+        def get(*a, **k):
+            return R()
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+    with pytest.raises(kakao_api.KakaoError) as e:
+        kakao_api._get("/campaigns", 1, "tok")
+    말 = str(e.value)
+    assert "만료되지 않" in 말
+    assert "issue_token.py" in 말

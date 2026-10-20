@@ -4,6 +4,11 @@
   "ad_worksheet_closed": "KakaopayDaily",
   "db_sheet_id": "1BTfbVKKCbe-6g2x3SQilnFAILMXB-Yj0C4GLG77o1r4",
   "ad_account_id": "10000246",
+  "kakao_token": "",
+  "kakao_accounts": {
+    "카카오 메인": 802036,
+    "카카오 서브": 928346
+  },
   "collector": {
     "profile_dir": "chrome-profile",
     "headless": true,

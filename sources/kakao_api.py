@@ -41,8 +41,10 @@
    정확히 일치로만 붙이면 116건 중 10건만 매칭됐다. 꼬리표를 떼면 116건 전부 붙는다.
    `match_key()` 가 그 규칙이다.
 
-토큰은 만료된다. refresh_token 이 없으므로 끊기면 kakao_bizform/issue_token_cc.py 로
-다시 발급해야 한다. 만료는 `KakaoError` 로 분명하게 띄운다.
+토큰은 만료되지 않는다. 카카오 비즈니스 인증(`kauth.kakao.com/oauth/business/token`) 은
+`expires_in` 도 `refresh_token` 도 주지 않는 토큰을 내준다. 실제로 2026-07-24 부터 쓰던
+토큰이 3개월 뒤에도 그대로 동작했고, 그걸 쓰던 동기화 스크립트에 갱신 코드가 아예 없었다.
+그래서 갱신 장치를 두지 않는다. 다시 발급해야 할 때만 `issue_token.py` 를 쓴다.
 """
 from __future__ import annotations
 
@@ -86,26 +88,37 @@ def _read_json(path: Path) -> dict:
 
 
 def credentials(token: str | None = None) -> str:
-    """액세스 토큰. 넘긴 값 > 환경변수 > kakao_bizform 의 토큰 파일 순.
+    """액세스 토큰. 넘긴 값(Secrets/config.json) > 환경변수 > 레거시 파일 순.
 
-    클라우드에서는 Secrets 의 kakao_token 을 app 이 읽어 인자로 넘긴다.
-    내 PC 에서는 모노레포의 kakao_bizform/token_result.json (또는 config.json) 을 쓴다.
-    두 계정이 모두 보이는 토큰이어야 한다.
+    클라우드는 Secrets 의 `kakao_token`, 내 PC 는 `config.json` 의 `kakao_token` 을
+    app 이 읽어 인자로 넘긴다. **두 계정이 모두 보이는 토큰**이어야 한다
+    (계정 하나만 보이는 토큰도 있었다 - `issue_token.py --check` 로 확인할 수 있다).
+
+    이 토큰은 만료되지 않는다. 카카오 비즈니스 인증(`oauth/business/token`) 이
+    `expires_in` 도 `refresh_token` 도 주지 않고, 실제로 2026-07-24 부터 쓰던 토큰이
+    3개월 뒤에도 그대로 동작했다. 그래서 갱신 장치가 필요 없다.
+
+    레거시 경로(kakao_bizform) 는 그 폴더가 은퇴해서 마지막 순서로만 남겨 둔다.
+    폴더가 지워져도 config.json/Secrets 만 있으면 돌아간다.
     """
     if token:
         return str(token).strip()
     env = os.environ.get("KAKAO_ACCESS_TOKEN")
     if env:
         return env.strip()
-    for name in ("token_result.json", "config.json"):
+    got = _read_json(HERE / "config.json").get("kakao_token")
+    if got:
+        return str(got).strip()
+    for name in ("token_result.json", "config.json"):      # 레거시
         got = _read_json(HERE.parent / "kakao_bizform" / name).get("access_token")
         if got:
             return str(got).strip()
     raise KakaoError(
         "카카오 액세스 토큰이 없습니다.\n"
         "  · 클라우드: Secrets 에 kakao_token\n"
-        "  · 내 PC: kakao_bizform/token_result.json 의 access_token\n"
-        "토큰이 만료됐으면 kakao_bizform/issue_token_cc.py 로 다시 발급해야 합니다.")
+        "  · 내 PC: config.json 에 \"kakao_token\": \"...\"\n"
+        "토큰은 만료되지 않지만, 없거나 권한이 바뀌었으면 "
+        "issue_token.py 로 다시 발급할 수 있습니다.")
 
 
 def accounts(overrides: dict | None = None) -> dict[str, int]:
@@ -150,8 +163,9 @@ def _get(path: str, account: int, token: str, timeout: int = 40, **params) -> di
         last = r
         if r.status_code == 401:
             raise KakaoError(
-                "카카오 토큰이 만료됐거나 권한이 없습니다 (HTTP 401).\n"
-                "kakao_bizform/issue_token_cc.py 로 토큰을 다시 발급해 주세요.")
+                "카카오 토큰이 거부됐습니다 (HTTP 401).\n"
+                "이 토큰은 만료되지 않으므로, 값이 잘렸거나 광고계정 권한이 바뀐 "
+                "경우입니다. issue_token.py 로 다시 발급해 주세요.")
         if r.status_code not in RETRY_STATUS:
             break
     if last is None:
