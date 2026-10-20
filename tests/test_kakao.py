@@ -405,3 +405,36 @@ def test_401은_만료가_아니라고_안내한다(monkeypatch):
     말 = str(e.value)
     assert "만료되지 않" in 말
     assert "issue_token.py" in 말
+
+
+def test_클라우드_Secrets_가_올바른_TOML_이다(tmp_path, monkeypatch):
+    """`카카오 메인` 처럼 공백이 있는 키는 TOML 에서 따옴표가 필요하다.
+
+    안 감싸면 Secrets 전체가 파싱에 실패해 앱이 시트 주소조차 못 읽는다.
+    """
+    import re
+    import tomllib
+
+    import make_cloud_secrets as mcs
+
+    cfg = {"ad_sheet_id": "SHEET", "kakao_token": "토큰값",
+           "kakao_accounts": {"카카오 메인": 802036, "카카오 서브": 928346}}
+    (tmp_path / "config.json").write_text(__import__("json").dumps(cfg), encoding="utf-8")
+    (tmp_path / "service_account.json").write_text(
+        '{"type": "service_account", "project_id": "p", "private_key": "k",'
+        ' "client_email": "e@x.iam.gserviceaccount.com", "token_uri": "t"}', encoding="utf-8")
+    monkeypatch.setattr(mcs, "HERE", tmp_path)
+    monkeypatch.setattr(mcs, "META", {})
+    monkeypatch.setattr(sys, "argv", ["make_cloud_secrets.py"])
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mcs.main()
+    본문 = re.search(r"-{4} 아래.*?-{4}\n(.*?)\n-{4} 여기까지", buf.getvalue(), re.S).group(1)
+
+    d = tomllib.loads(본문)                      # 깨지면 여기서 예외
+    assert d["kakao_token"] == "토큰값"
+    assert d["kakao_accounts"]["카카오 메인"] == 802036
+    assert d["kakao_accounts"]["카카오 서브"] == 928346

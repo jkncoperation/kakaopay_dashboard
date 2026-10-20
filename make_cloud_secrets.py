@@ -68,7 +68,9 @@ def main() -> int:
         f"kakao_token = {q(cfg.get('kakao_token', ''))}",
         "",
         "[kakao_accounts]",
-    ] + [f"{k} = {int(v)}" for k, v in (cfg.get("kakao_accounts") or {}).items()] + [
+        # 키에 공백이 있으면(`카카오 메인`) TOML 에서 반드시 따옴표로 감싸야 한다.
+        # 안 감싸면 Secrets 전체가 파싱에 실패해 앱이 설정을 못 읽는다.
+    ] + [f"{q(k)} = {int(v)}" for k, v in (cfg.get("kakao_accounts") or {}).items()] + [
         "",
         "[gcp_service_account]",
     ] + [f"{k} = {q(sa[k])}" for k in KEYS if k in sa]
