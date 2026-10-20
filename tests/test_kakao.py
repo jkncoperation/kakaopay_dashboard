@@ -135,9 +135,11 @@ def test_기본은_켜진_캠페인만_본다(monkeypatch, fake):
     _structure(monkeypatch, [{"id": 1, "name": "켜짐", "config": "ON"},
                              {"id": 2, "name": "꺼짐", "config": "OFF"}])
     T = kakao_api.today_kst()
+    kakao_api.forget_spenders()
     ads = kakao_api.fetch(9, T - dt.timedelta(1), T - dt.timedelta(1))
     assert set(ads["캠페인"]) == {"켜짐"}
-    # 꺼진 캠페인의 지출을 확인하는 캠페인 리포트는 부르지 않는다
+    # 기억이 없는 첫 조회는 세트 지출로 범위를 좁힌다 (캠페인 리포트는 쓰지 않는다)
+    assert [c["path"] for c in fake.calls].count("/adGroups/report") == 1
     assert not [c for c in fake.calls if c["path"] == "/campaigns/report"]
 
 
@@ -150,8 +152,8 @@ def test_scan_all이면_꺼진_캠페인도_지출로_확인한다(monkeypatch, 
     assert len([c for c in fake.calls if c["path"] == "/campaigns/report"]) == 2
 
 
-def test_지출없는_세트의_소재는_부르지_않는다(monkeypatch):
-    """소재 리포트가 호출의 대부분이다. 세트에서 걸러 내는 게 핵심."""
+def test_지출없는_캠페인의_소재는_부르지_않는다(monkeypatch):
+    """소재 리포트가 호출의 대부분이다. 캠페인 합계로 걸러 내는 게 핵심."""
     _structure(monkeypatch, [{"id": 1, "name": "켜짐", "config": "ON"}])
     보낸 = []
 
@@ -277,14 +279,15 @@ def test_재시도_대상에_호출제한과_일시장애가_들어있다():
 
 # ---------------------------------------------------------------- 세트 합계 검증
 class FakeApi:
-    """세트 지출과 소재별 지출을 따로 정해 두는 대역. 어떤 소재를 불렀는지 기록한다."""
+    """캠페인 지출과 소재별 지출을 따로 정해 두는 대역. 어떤 소재를 불렀는지 기록한다."""
 
-    def __init__(self, 세트지출: float, 소재지출: dict[int, float]):
-        self.세트지출 = 세트지출
+    def __init__(self, 캠페인지출: float, 소재지출: dict[int, float]):
+        self.캠페인지출 = 캠페인지출
         self.소재지출 = 소재지출
         self.불린소재: list[int] = []
 
     def install(self, monkeypatch, 소재목록):
+        kakao_api.forget_spenders()      # 지난 테스트가 기억한 소재가 순서를 바꾸지 않게
         monkeypatch.setattr(kakao_api, "credentials", lambda token=None: "tok")
         monkeypatch.setattr(kakao_api, "campaigns",
                             lambda a, t: [{"id": 1, "name": "캠페인", "config": "ON"}])
@@ -295,8 +298,9 @@ class FakeApi:
 
     def _get(self, path, account, token, timeout=40, **params):
         day = (kakao_api.today_kst() - dt.timedelta(1)).isoformat()
-        if path == "/adGroups/report":
-            비용 = self.세트지출
+        if path in ("/campaigns/report", "/adGroups/report"):
+            # 가짜 계정은 세트가 하나라 세트 지출 = 캠페인 지출이다
+            비용 = self.캠페인지출
         else:
             cid = int(params["creativeId"])
             self.불린소재.append(cid)
@@ -316,9 +320,9 @@ def _어제():
     return T - dt.timedelta(1), T - dt.timedelta(1)
 
 
-def test_세트_합계가_설명되면_꺼진_소재는_부르지_않는다(monkeypatch):
+def test_캠페인_합계가_설명되면_꺼진_소재는_부르지_않는다(monkeypatch):
     """꺼진 소재까지 전부 부르면 세트 2개에 9분이 걸렸다."""
-    api = FakeApi(세트지출=1000.0, 소재지출={1: 1000.0, 2: 500.0, 3: 500.0})
+    api = FakeApi(캠페인지출=1000.0, 소재지출={1: 1000.0, 2: 500.0, 3: 500.0})
     api.install(monkeypatch, 소재목록)
     ads = kakao_api.fetch(9, *_어제())
     assert api.불린소재 == [1]                      # 켜진 소재 하나로 끝
@@ -328,17 +332,17 @@ def test_세트_합계가_설명되면_꺼진_소재는_부르지_않는다(monk
 
 def test_켜진_소재로_모자라면_꺼진_소재까지_채운다(monkeypatch):
     """서브 계정 10/19: 어제 돌다 끈 소재 때문에 지출의 57%(312,420원)가 사라졌었다."""
-    api = FakeApi(세트지출=543859.0, 소재지출={1: 231439.0, 2: 312420.0, 3: 0.0})
+    api = FakeApi(캠페인지출=543859.0, 소재지출={1: 231439.0, 2: 312420.0, 3: 0.0})
     api.install(monkeypatch, 소재목록)
     ads = kakao_api.fetch(9, *_어제())
-    assert ads["지출"].sum() == 543859.0            # 세트 합계와 정확히 일치
+    assert ads["지출"].sum() == 543859.0            # 캠페인 합계와 정확히 일치
     assert api.불린소재 == [1, 2]                    # 메꿔지면 3번은 안 부른다
     assert ads.attrs["누락"] == []
 
 
 def test_끝까지_안_맞으면_누락으로_남긴다(monkeypatch):
     """삭제된 소재의 지출 등. 조용히 비면 안 된다."""
-    api = FakeApi(세트지출=1000.0, 소재지출={1: 100.0, 2: 0.0, 3: 0.0})
+    api = FakeApi(캠페인지출=1000.0, 소재지출={1: 100.0, 2: 0.0, 3: 0.0})
     api.install(monkeypatch, 소재목록)
     ads = kakao_api.fetch(9, *_어제())
     assert sorted(api.불린소재) == [1, 2, 3]          # 전부 불러 봤다
@@ -354,8 +358,8 @@ def test_켜진_소재를_먼저_부른다():
     assert [c["id"] for c in kakao_api.order_creatives(섞임)] == [1, 2, 9, 8]
 
 
-def test_지출없는_세트는_소재를_아예_부르지_않는다(monkeypatch):
-    api = FakeApi(세트지출=0.0, 소재지출={1: 100.0})
+def test_지출없는_캠페인은_소재를_아예_부르지_않는다(monkeypatch):
+    api = FakeApi(캠페인지출=0.0, 소재지출={1: 100.0})
     api.install(monkeypatch, 소재목록)
     ads = kakao_api.fetch(9, *_어제())
     assert api.불린소재 == [] and ads.empty
@@ -520,3 +524,55 @@ def test_소재명_목록은_꺼진_캠페인까지_모은다(monkeypatch):
         {"id": gid, "name": f"소재{gid}_메인", "config": "OFF"}])
     idx = kakao_api.creative_index(9)
     assert idx == {"소재10", "소재20"}        # 꼬리표를 뗀 키로, 꺼진 캠페인 것도 들어 있다
+
+
+# ---------------------------------------------------------------- 지출 소재 기억
+def test_지난번_지출_소재를_먼저_부른다(monkeypatch):
+    """지출은 소재 몇 개에 몰려 있고 구성이 잘 안 바뀐다. 기억해 두면 호출이 줄어든다."""
+    # 꺼진 소재 3번만 지출이 있는 상황 (켜진 1번은 지출 0)
+    api = FakeApi(캠페인지출=500.0, 소재지출={1: 0.0, 2: 0.0, 3: 500.0})
+    api.install(monkeypatch, 소재목록)
+    kakao_api.fetch(9, *_어제())
+    첫판 = list(api.불린소재)
+    assert 첫판 == [1, 2, 3]                  # 켜진 것부터 더듬어 3번에 도달
+
+    api.불린소재.clear()
+    kakao_api.fetch(9, *_어제())              # 기억이 살아 있는 두 번째 조회
+    assert api.불린소재 == [3], "기억한 소재를 먼저 불러 한 번에 끝나야 한다"
+
+
+def test_기억은_지출이_있던_소재만(monkeypatch):
+    api = FakeApi(캠페인지출=500.0, 소재지출={1: 500.0, 2: 0.0, 3: 0.0})
+    api.install(monkeypatch, 소재목록)
+    kakao_api.fetch(9, *_어제())
+    assert kakao_api.remembered(9, 1) == [1]
+
+
+def test_기억이_틀려도_캠페인_합계로_메꾼다(monkeypatch):
+    """기억한 소재가 이제 안 돌면, 합계가 안 맞으니 나머지를 계속 부른다."""
+    api = FakeApi(캠페인지출=500.0, 소재지출={1: 0.0, 2: 0.0, 3: 500.0})
+    api.install(monkeypatch, 소재목록)
+    kakao_api.fetch(9, *_어제())              # 3번을 기억
+    kakao_api.forget_spenders()
+    kakao_api.remember(9, 1, 2)               # 엉뚱한 소재(2번)를 기억한 상태로 바꾼다
+
+    api.불린소재.clear()
+    ads = kakao_api.fetch(9, *_어제())
+    assert api.불린소재[0] == 2                # 기억한 것을 먼저 부르고
+    assert 3 in api.불린소재                   # 모자라니 계속 불러 3번까지 간다
+    assert ads["지출"].sum() == 500.0
+    assert ads.attrs["누락"] == []
+
+
+def test_기억_목록은_무한히_늘지_않는다():
+    kakao_api.forget_spenders()
+    for i in range(kakao_api.SPENDERS_MAX + 15):
+        kakao_api.remember(1, 1, i)
+    assert len(kakao_api.remembered(1, 1)) == kakao_api.SPENDERS_MAX
+
+
+def test_우선순위_기억_켜짐_꺼짐_순():
+    쌍 = [({}, {"id": 9, "config": "OFF"}), ({}, {"id": 1, "config": "ON"}),
+         ({}, {"id": 8, "config": "OFF"}), ({}, {"id": 2, "config": "ON"})]
+    순서 = [cr["id"] for _, cr in kakao_api.prioritize(쌍, 기억=[8])]
+    assert 순서 == [8, 1, 2, 9]

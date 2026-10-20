@@ -21,13 +21,22 @@
 
    a) 캠페인 - 기본은 켜져 있는 것만(`scan_all=False`). 21개를 전부 리포트로 확인하면
       112회 호출 693초가 걸렸다. 꺼진 캠페인의 지난 지출을 봐야 할 때만 True.
-   b) 소재 - **세트 지출을 정답으로 삼는다.** 켜진 소재부터 부르고 세트 합계가 다
-      설명되면 거기서 멈춘다. 양쪽으로 틀리기 쉬운 자리라 합계로 검증한다.
+   b) 소재 - **합계를 정답으로 삼고, 설명되면 멈춘다.** 양쪽으로 틀리기 쉬운 자리다.
         · 꺼진 소재까지 전부 부르면: 세트 2개에 소재 81개 × 7초 = 9분
         · 켜진 소재만 보고 끝내면: 조용히 빠진다. 서브 계정 10/19 는 어제 돌다 끈
           소재 때문에 지출의 57%(312,420원)가 사라졌다
-      검증을 넣으니 둘 다 피했다. 10/19 기준 서브 44초·메인 51초에 세트 합계와 정확히
-      일치한다. 끝까지 안 맞으면(삭제된 소재 등) `attrs["누락"]` 으로 올려 화면에 띄운다.
+      그래서 두 경로를 쓴다. 어느 쪽이든 끝에서 합계와 맞춰 보고, 안 맞으면
+      `attrs["누락"]` 으로 올려 화면에 띄운다. 조용히 비는 일은 없다.
+
+        빠른 길  지난번 지출이 있던 소재(_SPENDERS) 를 먼저 부르고 캠페인 리포트
+                 한 번으로 검증한다. 지출은 소재 몇 개에 몰려 있고 구성이 잘 안 바뀌어서
+                 대개 여기서 끝난다.                         메인 당일 7회 27초
+        느린 길  기억이 없거나(첫 조회) 기억으로 부족하면 세트 지출로 범위를 좁힌다.
+                 세트 리포트가 세트 수만큼 드는 게 값이다.    메인 당일 12회 57초
+
+      프로파일 결과가 이 설계를 정했다. 메인 당일 51초 중 세트 리포트 6회가 27.5초(54%)로
+      가장 컸고, 목록 조회(campaigns/adGroups/creatives) 는 0.8초로 싸다. 호출 제한이
+      리포트에만 걸리므로, 목록은 필요한 만큼 부르고 리포트만 아낀다.
 
    화면에서는 어느 범위를 봤는지 캡션에 적어 조용히 빠진 것처럼 보이지 않게 한다.
 
@@ -233,11 +242,48 @@ def order_creatives(items: list[dict]) -> list[dict]:
     """소재를 '부를 순서' 로 세운다. 켜져 있는 것 먼저.
 
     지출이 있는 세트라도 그 안의 소재는 대부분 꺼져 있다(메인 계정: 소재 148개 중 ON 18개).
-    켜진 것부터 부르면 대개 몇 번 만에 세트 지출이 다 설명돼 거기서 멈출 수 있다.
+    켜진 것부터 부르면 대개 몇 번 만에 지출이 다 설명돼 거기서 멈출 수 있다.
     """
     켜짐 = [c for c in items if str(c.get("config", "")).upper() == "ON"]
     꺼짐 = [c for c in items if str(c.get("config", "")).upper() != "ON"]
     return 켜짐 + 꺼짐
+
+
+# 지난번 조회에서 지출이 있던 소재. (계정, 캠페인) -> 소재 ID 목록.
+# 지출은 소재 몇 개에 몰려 있고 그 구성은 잘 안 바뀌어서, 이걸 먼저 부르면 대개
+# 두세 번에 캠페인 지출이 다 설명된다. 틀려도 캠페인 합계로 검증하니 안전하다.
+# 프로세스 메모리라 앱이 재시작되면 비고, 그때는 켜진 소재부터 더듬는다.
+_SPENDERS: dict[tuple, list[int]] = {}
+SPENDERS_MAX = 40
+
+
+def remembered(account: int, campaign_id: int) -> list[int]:
+    return list(_SPENDERS.get((account, campaign_id), []))
+
+
+def remember(account: int, campaign_id: int, creative_id: int) -> None:
+    key = (account, campaign_id)
+    ids = _SPENDERS.setdefault(key, [])
+    if creative_id in ids:
+        return
+    ids.append(creative_id)
+    del ids[:-SPENDERS_MAX]
+
+
+def forget_spenders() -> None:
+    _SPENDERS.clear()
+
+
+def prioritize(pairs: list[tuple], 기억: list[int]) -> list[tuple]:
+    """(세트, 소재) 목록을 부를 순서로 세운다. 기억된 지출 소재 -> 켜진 소재 -> 나머지."""
+    기억순 = {cid: i for i, cid in enumerate(기억)}
+    def 순위(item):
+        _, cr = item
+        cid = cr.get("id")
+        if cid in 기억순:
+            return (0, 기억순[cid])
+        return (1 if str(cr.get("config", "")).upper() == "ON" else 2, 0)
+    return sorted(pairs, key=순위)
 
 
 def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
@@ -268,62 +314,98 @@ def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
     camps = campaigns(account, tok)
     tick(f"캠페인 {len(camps)}개 확인")
 
+    camp_spend: dict = {}
     if not scan_all:
         live = [c for c in camps if str(c.get("config", "")).upper() == "ON"]
     else:
         # 지출이 있는 캠페인만 고른다. config 만 보고 거르지 않고 리포트로 확인한다.
+        # 여기서 받은 리포트를 아래에서 '정답' 으로 다시 쓴다 (두 번 부르지 않는다).
         live = []
         for c in camps:
             rows = report("campaigns", c["id"], account, tok, start, end)
             tick(f"캠페인 지출 확인 {c.get('name', '')[:20]}")
             if _spend(rows) >= min_spend:
                 live.append(c)
+                camp_spend[c["id"]] = rows
 
     out: list[dict] = []
     missing: list[dict] = []
     for c in live:
-        groups = ad_groups(account, tok, c["id"])
-        tick(f"세트 {len(groups)}개 ({c.get('name', '')[:16]})")
-        for g in groups:
-            grows = report("adGroups", g["id"], account, tok, start, end)
-            tick(f"세트 지출 확인 {g.get('name', '')[:20]}")
-            세트지출 = _spend(grows)
-            if 세트지출 < min_spend:
-                continue                      # 이 세트는 소재를 부를 필요가 없다
+        # 목록 조회는 싸다 (0.8초, 호출 제한이 리포트에만 걸린다). 리포트만 아끼면 된다.
+        # 단 같은 목록을 두 번 부르지는 않는다 - 아래 '느린 길' 에서 재사용한다.
+        세트들 = ad_groups(account, tok, c["id"])
+        세트소재 = {g["id"]: creatives(account, tok, g["id"]) for g in 세트들}
+        쌍 = [(g, cr) for g in 세트들 for cr in 세트소재[g["id"]]]
+        tick(f"소재 {len(쌍)}개 확인 ({c.get('name', '')[:16]})")
+        품목 = {cr["id"]: (g, cr) for g, cr in 쌍}
+        얻은: dict[int, list] = {}
 
-            # 세트 지출이 '정답' 이다. 켜진 소재부터 부르고, 세트 합계가 다 설명되면
-            # 거기서 멈춘다. 꺼진 소재까지 전부 부르면 세트 2개에 9분이 걸렸다.
-            # 반대로 켜진 것만 보고 끝내면 조용히 빠진다 - 서브 계정 10/19 는
-            # 어제 돌다 끈 소재 때문에 지출의 57%(312,420원)가 사라졌다.
-            설명된지출 = 0.0
-            for cr in order_creatives(creatives(account, tok, g["id"])):
-                if 설명된지출 >= 세트지출 - min_spend:
-                    break                     # 세트 지출이 다 설명됐다
-                rows = report("creatives", cr["id"], account, tok, start, end)
-                tick(f"소재 {cr.get('name', '')[:24]}")
-                for r in rows:
-                    m = r.get("metrics") or {}
-                    if not m:
-                        continue              # 그 날 노출이 없던 소재
-                    설명된지출 += float(m.get("cost") or 0)
-                    out.append({
-                        "날짜": r.get("start"),
-                        "캠페인": str(c.get("name", "")).strip(),
-                        "광고세트": str(g.get("name", "")).strip(),
-                        "소재": str(cr.get("name", "")).strip(),
-                        "광고ID": str(cr.get("id", "")),
-                        "지출": float(m.get("cost") or 0),
-                        "노출수": float(m.get("imp") or 0),
-                        "클릭수": float(m.get("click") or 0),
-                    })
-            남은지출 = 세트지출 - 설명된지출
-            if 남은지출 >= min_spend:
-                # 소재를 전부 불렀는데도 세트 합계가 안 맞는다 (삭제된 소재 등).
-                # 조용히 넘기면 지출이 비므로 호출부가 알 수 있게 모아 둔다.
-                missing.append({"광고세트": str(g.get("name", "")).strip(),
-                                "세트지출": 세트지출, "소재합계": 설명된지출,
-                                "누락": 남은지출})
-            tick(f"세트 완료 {g.get('name', '')[:20]}")
+        def 소재조회(cid: int) -> list:
+            if cid not in 얻은:
+                얻은[cid] = report("creatives", cid, account, tok, start, end)
+                tick(f"소재 {품목[cid][1].get('name', '')[:24]}")
+            return 얻은[cid]
+
+        # 빠른 길: 지난번 지출 소재 + 캠페인 합계 한 번으로 검증한다.
+        # 세트마다 리포트를 부르면 메인 계정은 그것만 6번 27.5초(전체의 54%)다.
+        기억 = [cid for cid in remembered(account, c["id"]) if cid in 품목]
+        목표 = None
+        if 기억:
+            camp_rows = camp_spend.get(c["id"])
+            if camp_rows is None:
+                camp_rows = report("campaigns", c["id"], account, tok, start, end)
+                tick(f"캠페인 지출 확인 {c.get('name', '')[:20]}")
+            목표 = _spend(camp_rows)
+            if 목표 < min_spend:
+                continue
+            if sum(_spend(소재조회(cid)) for cid in 기억) < 목표 - min_spend:
+                목표 = None            # 기억으로 부족하다 -> 세트별로 좁힌다
+
+        if 목표 is None:
+            # 느린 길(첫 조회·구성이 바뀐 뒤): 세트 지출로 범위를 좁힌다. 기억 없이
+            # 켜진 소재를 전부 더듬으면 메인 계정이 117초까지 늘어난다(세트 좁히기는 51초).
+            목표 = 0.0
+            for g in 세트들:
+                grows = report("adGroups", g["id"], account, tok, start, end)
+                tick(f"세트 지출 확인 {g.get('name', '')[:20]}")
+                세트지출 = _spend(grows)
+                목표 += 세트지출
+                if 세트지출 < min_spend:
+                    continue           # 이 세트는 소재를 부를 필요가 없다
+                세트설명 = 0.0
+                for cr in order_creatives(세트소재[g["id"]]):
+                    if 세트설명 >= 세트지출 - min_spend:
+                        break          # 이 세트 지출이 다 설명됐다
+                    세트설명 += _spend(소재조회(cr["id"]))
+
+        설명된지출 = 0.0
+        for cid, rows in 얻은.items():
+            g, cr = 품목[cid]
+            if _spend(rows) >= min_spend:
+                remember(account, c["id"], cid)
+            for r in rows:
+                m = r.get("metrics") or {}
+                if not m:
+                    continue           # 그 날 노출이 없던 소재
+                설명된지출 += float(m.get("cost") or 0)
+                out.append({
+                    "날짜": r.get("start"),
+                    "캠페인": str(c.get("name", "")).strip(),
+                    "광고세트": str(g.get("name", "")).strip(),
+                    "소재": str(cr.get("name", "")).strip(),
+                    "광고ID": str(cid),
+                    "지출": float(m.get("cost") or 0),
+                    "노출수": float(m.get("imp") or 0),
+                    "클릭수": float(m.get("click") or 0),
+                })
+
+        남은지출 = 목표 - 설명된지출
+        if 남은지출 >= min_spend:
+            # 소재를 다 불렀는데도 합계가 안 맞는다 (삭제된 소재 등).
+            # 조용히 넘기면 지출이 비므로 호출부가 알 수 있게 모아 둔다.
+            missing.append({"광고세트": str(c.get("name", "")).strip(),
+                            "세트지출": 목표, "소재합계": 설명된지출,
+                            "누락": 남은지출})
 
     df = normalize(out, min_spend=min_spend)
     df.attrs["누락"] = missing
