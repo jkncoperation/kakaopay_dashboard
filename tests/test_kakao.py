@@ -273,3 +273,89 @@ def test_재시도_대상에_호출제한과_일시장애가_들어있다():
         assert code in kakao_api.RETRY_STATUS
     assert 400 not in kakao_api.RETRY_STATUS
     assert 401 not in kakao_api.RETRY_STATUS
+
+
+# ---------------------------------------------------------------- 세트 합계 검증
+class FakeApi:
+    """세트 지출과 소재별 지출을 따로 정해 두는 대역. 어떤 소재를 불렀는지 기록한다."""
+
+    def __init__(self, 세트지출: float, 소재지출: dict[int, float]):
+        self.세트지출 = 세트지출
+        self.소재지출 = 소재지출
+        self.불린소재: list[int] = []
+
+    def install(self, monkeypatch, 소재목록):
+        monkeypatch.setattr(kakao_api, "credentials", lambda token=None: "tok")
+        monkeypatch.setattr(kakao_api, "campaigns",
+                            lambda a, t: [{"id": 1, "name": "캠페인", "config": "ON"}])
+        monkeypatch.setattr(kakao_api, "ad_groups",
+                            lambda a, t, cid: [{"id": 7, "name": "세트"}])
+        monkeypatch.setattr(kakao_api, "creatives", lambda a, t, gid: 소재목록)
+        monkeypatch.setattr(kakao_api, "_get", self._get)
+
+    def _get(self, path, account, token, timeout=40, **params):
+        day = (kakao_api.today_kst() - dt.timedelta(1)).isoformat()
+        if path == "/adGroups/report":
+            비용 = self.세트지출
+        else:
+            cid = int(params["creativeId"])
+            self.불린소재.append(cid)
+            비용 = self.소재지출.get(cid, 0.0)
+        return {"data": [{"start": day, "end": day,
+                          "dimensions": {"creative_id": str(params.get("creativeId", ""))},
+                          "metrics": {"imp": 10, "click": 1, "cost": 비용}}]}
+
+
+소재목록 = [{"id": 1, "name": "켜진소재", "config": "ON"},
+           {"id": 2, "name": "꺼진소재A", "config": "OFF"},
+           {"id": 3, "name": "꺼진소재B", "config": "OFF"}]
+
+
+def _어제():
+    T = kakao_api.today_kst()
+    return T - dt.timedelta(1), T - dt.timedelta(1)
+
+
+def test_세트_합계가_설명되면_꺼진_소재는_부르지_않는다(monkeypatch):
+    """꺼진 소재까지 전부 부르면 세트 2개에 9분이 걸렸다."""
+    api = FakeApi(세트지출=1000.0, 소재지출={1: 1000.0, 2: 500.0, 3: 500.0})
+    api.install(monkeypatch, 소재목록)
+    ads = kakao_api.fetch(9, *_어제())
+    assert api.불린소재 == [1]                      # 켜진 소재 하나로 끝
+    assert ads["지출"].sum() == 1000.0
+    assert ads.attrs["누락"] == []
+
+
+def test_켜진_소재로_모자라면_꺼진_소재까지_채운다(monkeypatch):
+    """서브 계정 10/19: 어제 돌다 끈 소재 때문에 지출의 57%(312,420원)가 사라졌었다."""
+    api = FakeApi(세트지출=543859.0, 소재지출={1: 231439.0, 2: 312420.0, 3: 0.0})
+    api.install(monkeypatch, 소재목록)
+    ads = kakao_api.fetch(9, *_어제())
+    assert ads["지출"].sum() == 543859.0            # 세트 합계와 정확히 일치
+    assert api.불린소재 == [1, 2]                    # 메꿔지면 3번은 안 부른다
+    assert ads.attrs["누락"] == []
+
+
+def test_끝까지_안_맞으면_누락으로_남긴다(monkeypatch):
+    """삭제된 소재의 지출 등. 조용히 비면 안 된다."""
+    api = FakeApi(세트지출=1000.0, 소재지출={1: 100.0, 2: 0.0, 3: 0.0})
+    api.install(monkeypatch, 소재목록)
+    ads = kakao_api.fetch(9, *_어제())
+    assert sorted(api.불린소재) == [1, 2, 3]          # 전부 불러 봤다
+    (누락,) = ads.attrs["누락"]
+    assert 누락["세트지출"] == 1000.0
+    assert 누락["소재합계"] == 100.0
+    assert 누락["누락"] == 900.0
+
+
+def test_켜진_소재를_먼저_부른다():
+    섞임 = [{"id": 9, "config": "OFF"}, {"id": 1, "config": "ON"},
+           {"id": 8, "config": "OFF"}, {"id": 2, "config": "ON"}]
+    assert [c["id"] for c in kakao_api.order_creatives(섞임)] == [1, 2, 9, 8]
+
+
+def test_지출없는_세트는_소재를_아예_부르지_않는다(monkeypatch):
+    api = FakeApi(세트지출=0.0, 소재지출={1: 100.0})
+    api.install(monkeypatch, 소재목록)
+    ads = kakao_api.fetch(9, *_어제())
+    assert api.불린소재 == [] and ads.empty

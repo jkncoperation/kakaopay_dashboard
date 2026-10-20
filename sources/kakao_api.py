@@ -13,11 +13,23 @@
        /creatives?adGroupId=           세트당 1회
        /creatives/report?creativeId=   소재당 1회    <- 여기가 대부분
 
-   계정 하나를 전부 훑어 보니 112회 호출에 693초가 걸렸다. 그래서 기본은 켜져 있는
-   캠페인만 본다(`scan_all=False`). 캠페인 21개 중 ON 은 1개라 호출이 수십 번으로 준다.
-   꺼진 캠페인도 지난 기간엔 지출이 있을 수 있어서, 그걸 봐야 할 때만 `scan_all=True` 로
-   모든 캠페인의 지출을 리포트로 확인한다. 화면에서는 체크박스로 고를 수 있게 하고,
-   기본값으로 조회했다는 사실을 캡션에 적어 조용히 빠진 것처럼 보이지 않게 한다.
+   호출 제한이 아주 빡빡하다. 3.5초 간격으로 불러도 200/429 가 번갈아 나온다 -
+   실질 처리량이 7초에 1회쯤이고 Retry-After 헤더도 없다. 게다가 이 제한은 운영 중인
+   비즈폼 Zapier 동기화와 같은 토큰을 쓰므로, 호출 수 자체를 줄이는 게 맞다.
+
+   그래서 두 가지로 줄인다.
+
+   a) 캠페인 - 기본은 켜져 있는 것만(`scan_all=False`). 21개를 전부 리포트로 확인하면
+      112회 호출 693초가 걸렸다. 꺼진 캠페인의 지난 지출을 봐야 할 때만 True.
+   b) 소재 - **세트 지출을 정답으로 삼는다.** 켜진 소재부터 부르고 세트 합계가 다
+      설명되면 거기서 멈춘다. 양쪽으로 틀리기 쉬운 자리라 합계로 검증한다.
+        · 꺼진 소재까지 전부 부르면: 세트 2개에 소재 81개 × 7초 = 9분
+        · 켜진 소재만 보고 끝내면: 조용히 빠진다. 서브 계정 10/19 는 어제 돌다 끈
+          소재 때문에 지출의 57%(312,420원)가 사라졌다
+      검증을 넣으니 둘 다 피했다. 10/19 기준 서브 44초·메인 51초에 세트 합계와 정확히
+      일치한다. 끝까지 안 맞으면(삭제된 소재 등) `attrs["누락"]` 으로 올려 화면에 띄운다.
+
+   화면에서는 어느 범위를 봤는지 캡션에 적어 조용히 빠진 것처럼 보이지 않게 한다.
 
 2) 당일은 기간을 주면 안 된다
    start/end 에 오늘이 하루라도 걸치면 기간 자체를 거부한다(detailCode 60008).
@@ -203,11 +215,25 @@ def _spend(rows: list[dict]) -> float:
 
 
 # ---------------------------------------------------------------- 가져오기
+def order_creatives(items: list[dict]) -> list[dict]:
+    """소재를 '부를 순서' 로 세운다. 켜져 있는 것 먼저.
+
+    지출이 있는 세트라도 그 안의 소재는 대부분 꺼져 있다(메인 계정: 소재 148개 중 ON 18개).
+    켜진 것부터 부르면 대개 몇 번 만에 세트 지출이 다 설명돼 거기서 멈출 수 있다.
+    """
+    켜짐 = [c for c in items if str(c.get("config", "")).upper() == "ON"]
+    꺼짐 = [c for c in items if str(c.get("config", "")).upper() != "ON"]
+    return 켜짐 + 꺼짐
+
+
 def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
           min_spend: float = 1.0, on_progress=None, scan_all: bool = False) -> pd.DataFrame:
     """기간의 소재별·일별 성과. 지출이 min_spend 미만인 행은 버린다.
 
     on_progress(단계설명, 지금까지_호출수) 를 주면 화면에 진행 상황을 띄울 수 있다.
+
+    세트 지출을 정답으로 삼아, 켜진 소재부터 부르고 합계가 맞으면 멈춘다. 끝까지 불러도
+    안 맞으면(삭제된 소재 등) `df.attrs["누락"]` 에 세트별로 남겨 둔다.
 
     scan_all: 꺼진 캠페인까지 리포트로 확인할지.
         False (기본) - 켜져 있는(config=ON) 캠페인만 본다. 계정당 캠페인이 21개라
@@ -240,21 +266,32 @@ def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
                 live.append(c)
 
     out: list[dict] = []
+    missing: list[dict] = []
     for c in live:
         groups = ad_groups(account, tok, c["id"])
         tick(f"세트 {len(groups)}개 ({c.get('name', '')[:16]})")
         for g in groups:
             grows = report("adGroups", g["id"], account, tok, start, end)
             tick(f"세트 지출 확인 {g.get('name', '')[:20]}")
-            if _spend(grows) < min_spend:
+            세트지출 = _spend(grows)
+            if 세트지출 < min_spend:
                 continue                      # 이 세트는 소재를 부를 필요가 없다
-            for cr in creatives(account, tok, g["id"]):
+
+            # 세트 지출이 '정답' 이다. 켜진 소재부터 부르고, 세트 합계가 다 설명되면
+            # 거기서 멈춘다. 꺼진 소재까지 전부 부르면 세트 2개에 9분이 걸렸다.
+            # 반대로 켜진 것만 보고 끝내면 조용히 빠진다 - 서브 계정 10/19 는
+            # 어제 돌다 끈 소재 때문에 지출의 57%(312,420원)가 사라졌다.
+            설명된지출 = 0.0
+            for cr in order_creatives(creatives(account, tok, g["id"])):
+                if 설명된지출 >= 세트지출 - min_spend:
+                    break                     # 세트 지출이 다 설명됐다
                 rows = report("creatives", cr["id"], account, tok, start, end)
                 tick(f"소재 {cr.get('name', '')[:24]}")
                 for r in rows:
                     m = r.get("metrics") or {}
                     if not m:
                         continue              # 그 날 노출이 없던 소재
+                    설명된지출 += float(m.get("cost") or 0)
                     out.append({
                         "날짜": r.get("start"),
                         "캠페인": str(c.get("name", "")).strip(),
@@ -265,8 +302,18 @@ def fetch(account: int, start: dt.date, end: dt.date, token: str | None = None,
                         "노출수": float(m.get("imp") or 0),
                         "클릭수": float(m.get("click") or 0),
                     })
+            남은지출 = 세트지출 - 설명된지출
+            if 남은지출 >= min_spend:
+                # 소재를 전부 불렀는데도 세트 합계가 안 맞는다 (삭제된 소재 등).
+                # 조용히 넘기면 지출이 비므로 호출부가 알 수 있게 모아 둔다.
+                missing.append({"광고세트": str(g.get("name", "")).strip(),
+                                "세트지출": 세트지출, "소재합계": 설명된지출,
+                                "누락": 남은지출})
             tick(f"세트 완료 {g.get('name', '')[:20]}")
-    return normalize(out, min_spend=min_spend)
+
+    df = normalize(out, min_spend=min_spend)
+    df.attrs["누락"] = missing
+    return df
 
 
 def normalize(rows: list[dict], min_spend: float = 1.0) -> pd.DataFrame:

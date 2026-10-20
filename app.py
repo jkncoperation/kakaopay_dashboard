@@ -211,8 +211,9 @@ def load_meta_conv(start, end) -> pd.DataFrame:
 # 훨씬 느리다. 캐시를 30분 두고, 슬롯은 10분으로 메타와 같이 맞춘다.
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_kakao_ads(account: int, start, end, slot: str, scan_all: bool) -> pd.DataFrame:
-    return kakao_api.fetch(account, start, end, token=conf("kakao_token"),
-                           scan_all=scan_all)
+    df = kakao_api.fetch(account, start, end, token=conf("kakao_token"), scan_all=scan_all)
+    # attrs 는 캐시를 거치면 사라질 수 있어 열로 들고 가지 않고 따로 돌려준다.
+    return df, df.attrs.get("누락", [])
 
 
 def load_kakao_conv(start, end) -> pd.DataFrame:
@@ -634,8 +635,14 @@ def api_view(label: str) -> None:
                 st.error(f"{label} 의 광고계정 ID 를 찾을 수 없습니다.")
                 return
             with st.spinner("카카오모먼트에서 불러오는 중… "
-                            "(소재 하나씩 조회해야 해서 몇 분 걸릴 수 있습니다)"):
-                ads = load_kakao_ads(account, d0, d1, slot, scan_all)
+                            "(소재 하나씩 조회해야 해서 시간이 걸립니다)"):
+                ads, 누락 = load_kakao_ads(account, d0, d1, slot, scan_all)
+            if 누락:
+                줄 = [f"- {m['광고세트']}: 세트 {m['세트지출']:,.0f}원 / "
+                     f"소재 합계 {m['소재합계']:,.0f}원 (차이 {m['누락']:,.0f}원)"
+                     for m in 누락[:5]]
+                st.warning("세트 지출이 소재 합계보다 큽니다. 삭제된 소재의 지출일 수 "
+                           "있습니다:\n\n" + "\n".join(줄))
             conv, key = load_kakao_conv(d0, d1), kakao_api.match_key
             extra_known = _remember_kakao_names(account, ads)
     except (meta_api.MetaError, kakao_api.KakaoError) as exc:
@@ -675,7 +682,8 @@ def api_view(label: str) -> None:
                "위 **새로고침** 을 누르면 곧바로 다시 불러옵니다."
                + ("" if kind != "kakao" else
                   ("  |  꺼진 캠페인까지 확인했습니다." if scan_all
-                   else "  |  **켜져 있는 캠페인만** 확인했습니다 (위 체크박스로 전체 확인).")))
+                   else "  |  **켜져 있는 캠페인만** 확인했습니다 (위 체크박스로 전체 확인).")
+                  ))
     meta_panel(g, conv, ns=ns, key=key, extra_known=extra_known,
                um_help=KAKAO_UM_HELP if kind == "kakao" else "")
 
