@@ -16,3 +16,6 @@ __pycache__/
 
 # 수집기 로그·상태 (저장소에 쌓을 필요 없음)
 logs/
+
+# 세트 순위 집계 캐시 (카카오 API 응답)
+set_ranking/cache/

@@ -725,9 +725,13 @@ def main() -> None:
 
     # 매체를 맨 위에서 고른다. 카카오페이(시트)와 메타(API)는 데이터 출처·집계 단위가
     # 달라서, 한 탭 줄에 섞으면 소재별/세트별이 어느 매체 것인지 헷갈린다.
-    channel = st.segmented_control("매체", ["카카오페이", *API_CHANNELS],
+    channel = st.segmented_control("매체", ["카카오페이", *API_CHANNELS, "세트 순위"],
                                    default="카카오페이", key="channel") or "카카오페이"
 
+    if channel == "세트 순위":            # 전 매체 라이브 세트를 예상승인단가 순으로 (set_ranking/)
+        from set_ranking.view import render
+        render()
+        return
     if channel in API_CHANNELS:
         api_view(channel)
         return
