@@ -62,10 +62,11 @@ def _paint(t: pd.DataFrame):
 
 
 CONFIG = {
-    '순위': st.column_config.NumberColumn(width=50),
+    # 순위도 고정해야 세트명 왼쪽에 붙는다. 고정하지 않으면 고정된 세트명이 맨 왼쪽으로
+    # 가면서 순위가 그 오른쪽으로 밀린다.
+    '순위': st.column_config.NumberColumn(width=50, pinned=True),
     '세트': st.column_config.TextColumn(width=260, pinned=True),
     '소재': st.column_config.TextColumn(width=240, pinned=True),
-    '매체': st.column_config.TextColumn(width='small'),
     '구분': st.column_config.TextColumn(width='small'),
     '예상승인단가': st.column_config.TextColumn(width='small'),
     '디비단가': st.column_config.TextColumn(width='small'),
@@ -79,22 +80,38 @@ HELP = ('접수·미팅·승인은 `건수 / 비율 / 영업단가` (비율은 D
         '승인·예정미팅이 없으면 접수 유무로 나눕니다.')
 
 
+TOP_N = 5
+
+
 def _chart(rk: pd.DataFrame) -> None:
-    d = rk[rk['exp_cost'].notna()].copy()
+    """상위 5위만. 바마다 간격을 띄우고 오른쪽 끝에 예상승인단가를 적는다."""
+    d = rk[rk['exp_cost'].notna()].sort_values('rank').head(TOP_N).copy()
     if d.empty:
         st.info('이 기간에는 승인이나 예정미팅이 있는 라이브 세트가 없습니다.')
         return
-    d['label'] = d['rank'].astype(str) + '. ' + d['set']
-    order = d.sort_values('rank')['label'].tolist()
-    bars = alt.Chart(d).mark_bar(cornerRadiusEnd=4, height=18).encode(
-        x=alt.X('exp_cost:Q', title='예상승인단가 (원)', axis=alt.Axis(format=',.0f')),
-        y=alt.Y('label:N', sort=order, title=None, axis=alt.Axis(labelLimit=320)),
+    d['label'] = d['rank'].astype(int).astype(str) + '위  ' + d['set']
+    d['tag'] = d['exp_cost'].map(lambda v: f'{v:,.0f}원')
+    order = d['label'].tolist()
+
+    # 값 글자가 잘리지 않게, 또 80만·100만 선이 보이게 가로 범위를 넉넉히 둔다.
+    상한 = max(float(d['exp_cost'].max()) * 1.22, T100 * 1.08)
+    # paddingInner 로 바 사이를 띄운다. 전에는 바 높이를 고정해 서로 붙어 보였다.
+    base = alt.Chart(d).encode(
+        y=alt.Y('label:N', sort=order, title=None,
+                scale=alt.Scale(paddingInner=0.4, paddingOuter=0.25),
+                axis=alt.Axis(labelLimit=340, labelFontSize=12)))
+    bars = base.mark_bar(cornerRadiusEnd=4).encode(
+        x=alt.X('exp_cost:Q', title='예상승인단가 (원)', axis=alt.Axis(format=',.0f'),
+                scale=alt.Scale(domain=[0, 상한], nice=False)),
         color=alt.Color('status:N', scale=alt.Scale(domain=list(COLOR), range=list(COLOR.values())), legend=alt.Legend(title=None, orient='top')),
         tooltip=[alt.Tooltip('set:N', title='세트'), alt.Tooltip('exp_cost:Q', title='예상승인단가', format=',.0f'),
                  alt.Tooltip('spend:Q', title='지출', format=',.0f'), alt.Tooltip('appr:Q', title='승인'),
                  alt.Tooltip('pend:Q', title='예정미팅')])
+    # 글자 색은 지정하지 않는다 - 스트림릿 테마가 밝기에 맞춰 준다.
+    tags = base.mark_text(align='left', dx=8, fontSize=12, fontWeight='bold').encode(
+        x=alt.X('exp_cost:Q', scale=alt.Scale(domain=[0, 상한], nice=False)), text='tag:N')
     rules = alt.Chart(pd.DataFrame({'v': [T80, T100]})).mark_rule(strokeDash=[4, 4], color=MUTED).encode(x='v:Q')
-    st.altair_chart((bars + rules).properties(height=max(120, 30 * len(d))), width='stretch')
+    st.altair_chart((bars + rules + tags).properties(height=46 * len(d) + 20), width='stretch')
 
 
 def render() -> None:
@@ -139,8 +156,9 @@ def render() -> None:
         return
 
     _chart(rk)
-    st.caption('세트를 클릭하면 그 세트의 소재별로 들어갑니다. 순위: 예상승인단가 → 접수단가 → 지출.')
-    table = _rows(rk, [('순위', 'rank'), ('세트', 'set'), ('매체', 'media')])
+    st.caption(f'위 그래프는 상위 {TOP_N}위입니다. 아래 표에서 세트를 클릭하면 그 세트의 '
+               '소재별로 들어갑니다. 순위: 예상승인단가 → 접수단가 → 지출.')
+    table = _rows(rk, [('순위', 'rank'), ('세트', 'set')])
     ev = st.dataframe(_paint(table), width='stretch', hide_index=True, column_config=CONFIG,
                       on_select='rerun', selection_mode='single-row', key=f"rk_tbl{st.session_state['rk_ver']}")
     picked = list(getattr(getattr(ev, 'selection', None), 'rows', []) or [])
