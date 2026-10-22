@@ -110,9 +110,14 @@ def _chart(rk: pd.DataFrame) -> None:
     # 값은 바 '안쪽' 오른쪽 끝에 흰색으로. 바 바깥에 두면 배경색 위에 놓여서, 색을
     # 지정하지 않으면 다크 모드에서 검게 나오고 흰색으로 고정하면 밝은 모드에서 사라진다.
     # 바 안쪽은 늘 초록·주황·빨강이라 흰 글자가 두 모드에서 다 읽힌다.
+    #
+    # **fill 로 지정해야 한다.** 글자 색에는 fill 이 color 보다 우선해서, 스트림릿 테마가
+    # 넣는 fill 이 mark 의 color 를 덮는다. color='white' 만 줬을 때 검게 나온 이유다.
+    # tooltip 은 끈다 - 숫자 위에서도 바 정보가 뜨면 겹쳐 보여서, 바에서만 뜨게 한다.
     tags = base.mark_text(align='right', dx=-8, fontSize=12, fontWeight='bold',
-                          color='white').encode(
-        x=alt.X('exp_cost:Q', scale=alt.Scale(domain=[0, 상한], nice=False)), text='tag:N')
+                          fill='white', color='white').encode(
+        x=alt.X('exp_cost:Q', scale=alt.Scale(domain=[0, 상한], nice=False)), text='tag:N',
+        tooltip=alt.value(None))
     rules = alt.Chart(pd.DataFrame({'v': [T80, T100]})).mark_rule(strokeDash=[4, 4], color=MUTED).encode(x='v:Q')
     st.altair_chart((bars + rules + tags).properties(height=46 * len(d) + 20), width='stretch')
 
