@@ -107,8 +107,11 @@ def _chart(rk: pd.DataFrame) -> None:
         tooltip=[alt.Tooltip('set:N', title='세트'), alt.Tooltip('exp_cost:Q', title='예상승인단가', format=',.0f'),
                  alt.Tooltip('spend:Q', title='지출', format=',.0f'), alt.Tooltip('appr:Q', title='승인'),
                  alt.Tooltip('pend:Q', title='예정미팅')])
-    # 글자 색은 지정하지 않는다 - 스트림릿 테마가 밝기에 맞춰 준다.
-    tags = base.mark_text(align='left', dx=8, fontSize=12, fontWeight='bold').encode(
+    # 값은 바 '안쪽' 오른쪽 끝에 흰색으로. 바 바깥에 두면 배경색 위에 놓여서, 색을
+    # 지정하지 않으면 다크 모드에서 검게 나오고 흰색으로 고정하면 밝은 모드에서 사라진다.
+    # 바 안쪽은 늘 초록·주황·빨강이라 흰 글자가 두 모드에서 다 읽힌다.
+    tags = base.mark_text(align='right', dx=-8, fontSize=12, fontWeight='bold',
+                          color='white').encode(
         x=alt.X('exp_cost:Q', scale=alt.Scale(domain=[0, 상한], nice=False)), text='tag:N')
     rules = alt.Chart(pd.DataFrame({'v': [T80, T100]})).mark_rule(strokeDash=[4, 4], color=MUTED).encode(x='v:Q')
     st.altair_chart((bars + rules + tags).properties(height=46 * len(d) + 20), width='stretch')
