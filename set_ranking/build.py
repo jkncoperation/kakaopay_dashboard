@@ -81,11 +81,25 @@ for k, df in g['COVER'].items():
     cov[k] = df['day'].max() if len(df) else pd.NaT
 cov = {k: min(v, E) if pd.notna(v) else pd.NaT for k, v in cov.items()}
 
+# 운영자가 오프했다고 알려 준 세트 (데이터상 최근 지출이 남아 있어도 순위에서 뺀다). 다시 켜면 여기서 지운다.
+OFF_SETS = {
+    '카카오 서브 연체해결 세트 (B)',        # 2026-10-23 오프
+    '토스 이미지 소재 세트',                # 2026-10-23 오프
+    '토스 adset1 / 간소화 랜딩',            # 2026-10-23 오프
+}
+# 이름을 바꾼 날부터 새 세트로 본다: {세트: (새로 보는 날, 화면에 쓸 이름)}.
+# 카카오 서브 '테스트 소재 세트 / 납입금 절감' 은 2026-10-21 에 '테스트 소재 세트 A' 로 바뀌었다
+# (DB 시트의 옛 이름 마지막 신청 10/20 23:37, 새 이름 첫 신청 10/21 17:59). 그 전 지출·DB 는 세지 않는다.
+RENAMED = {'카카오 서브 납입금 절감 세트 (A)': (pd.Timestamp('2026-10-21'), '카카오 서브 테스트 소재 세트 A')}
+
 # ---------------------------------------------------------------- 세트 순위
 rows = []
 for N in (7, 14, 30):
-    S = E - pd.Timedelta(days=N - 1)
+    S0 = E - pd.Timedelta(days=N - 1)
     for name, sp_ser, mask in g['SETS']:
+        if name in OFF_SETS:
+            continue
+        S = max(S0, RENAMED[name][0]) if name in RENAMED else S0
         ce = cov.get(MEDIA_OF(name))
         if pd.isna(ce) or not len(sp_ser):
             continue
@@ -288,6 +302,11 @@ cre['status'] = [tier(e, c, r, s) for e, c, r, s in zip(cre.exp, cre.exp_cost, c
 cre['_t'] = cre.exp.gt(0).map({True: 0, False: 1}) + (cre.recv.eq(0) & cre.exp.eq(0)).astype(int)
 cre = cre.sort_values(['period', 'set', '_t', 'exp_cost', 'recv_cost', 'spend'], ascending=[True, True, True, True, True, False],
                       na_position='last').drop(columns='_t')
+
+# 이름을 바꾼 세트는 새 이름으로 보여 준다 (집계는 위에서 바꾼 날부터만 했다)
+LABEL = {k: v for k, (_, v) in RENAMED.items()}
+rank['set'] = rank['set'].replace(LABEL)
+cre['set'] = cre['set'].replace(LABEL)
 
 # ---------------------------------------------------------------- 저장
 OUT.mkdir(parents=True, exist_ok=True)
