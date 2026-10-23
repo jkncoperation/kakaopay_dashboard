@@ -276,10 +276,12 @@ for f in glob.glob(str(DL / 'Tiktok Ads_일일보고서*.xlsx')):
     x['day'] = pd.to_datetime(x['일별'], errors='coerce')
     x['cost'] = pd.to_numeric(x['지출'], errors='coerce').fillna(0)
     x['_src'] = os.path.getmtime(f)
-    fr.append(x[x.day.notna()][['day', '광고 이름', 'cost', '_src']])
+    x['grp'] = x['광고 그룹 이름'].astype(str).str.strip() if '광고 그룹 이름' in x.columns else ''
+    fr.append(x[x.day.notna()][['day', 'grp', '광고 이름', 'cost', '_src']])
 if fr:
     tk = pd.concat(fr)
     tk = tk[tk._src == tk.day.map(tk.groupby('day')._src.max())]
+    tk = tk[tk.grp == '대화형 영상 소재']          # 세트 정의와 같게: 이 광고그룹의 소재만 (메신저형·통화형·대화형)
     sp_rows += [('틱톡 대화형 영상 소재', str(r['광고 이름']).strip(), r['day'], r['cost']) for _, r in tk[tk.cost > 0].iterrows()]
 db_cre['틱톡 대화형 영상 소재'] = d[MASK['틱톡 대화형 영상 소재']].utm_content.str.strip().replace({'__CID_NAME__': '(소재명 미확인)'})
 
