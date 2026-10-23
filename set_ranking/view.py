@@ -16,9 +16,29 @@ import streamlit as st
 from core.metrics import stage_cell
 
 DATA = Path(__file__).resolve().parent.parent / 'data' / 'set_ranking'
-T80, T100 = 800_000, 1_000_000
-COLOR = {'80만 이하': '#2e7d32', '100만 이하': '#ef6c00', '100만 초과': '#c62828'}
+
+# 예상승인단가 4단계 (2026-10-23 지정). build.py 의 tier() 와 같은 기준이어야 한다.
+T80, T100, T120 = 800_000, 1_000_000, 1_200_000
+COLOR = {'80만 이하': '#2e7d32',    # 초록
+         '100만 이하': '#1565c0',   # 파랑
+         '120만 이하': '#ef6c00',   # 주황
+         '120만 초과': '#c62828'}   # 빨강
 MUTED = '#8a8a8a'
+
+
+def _tier(exp_cost, status: str) -> str:
+    """예상승인단가 구간. 저장된 status 를 쓰지 않고 금액에서 다시 계산한다.
+
+    구간을 바꿀 때 CSV 를 다시 만들지 않아도 화면이 맞게 나오도록 한 것이다
+    (집계는 이 PC 에서만 돌 수 있다). 금액이 없는 행('접수만'·'성과 없음'·'DB만') 은
+    구간이 아니라 상태라서 저장된 값을 그대로 쓴다.
+    """
+    if exp_cost is None or pd.isna(exp_cost):
+        return status
+    for 한도, 이름 in ((T80, '80만 이하'), (T100, '100만 이하'), (T120, '120만 이하')):
+        if exp_cost <= 한도:
+            return 이름
+    return '120만 초과'
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -27,6 +47,8 @@ def _load(stamp: float):
     cr = pd.read_csv(DATA / 'creatives.csv')
     cv = pd.read_csv(DATA / 'coverage.csv').fillna('')
     meta = json.loads((DATA / 'meta.json').read_text(encoding='utf-8'))
+    for d in (rk, cr):            # 저장된 구간 대신 지금 기준으로 다시 매긴다
+        d['status'] = [_tier(e, s) for e, s in zip(d['exp_cost'], d['status'])]
     return rk, cr, cv, meta
 
 
@@ -54,7 +76,7 @@ def _rows(df: pd.DataFrame, head: list[str]) -> pd.DataFrame:
 
 
 def _paint(t: pd.DataFrame):
-    """구분·예상승인단가 글자색: 80만 이하 초록 / 100만 이하 주황 / 100만 초과 빨강."""
+    """구분·예상승인단가 글자색: 80만 초록 / 100만 파랑 / 120만 주황 / 120만 초과 빨강."""
     def col(row):
         c = COLOR.get(row['구분'], MUTED)
         return [f'color: {c}; font-weight: 600' if k in ('구분', '예상승인단가') else '' for k in row.index]
@@ -76,8 +98,8 @@ CONFIG = {
 }
 
 HELP = ('접수·미팅·승인은 `건수 / 비율 / 영업단가` (비율은 DB 대비, 영업단가는 지출 ÷ 건수). '
-        '예상승인 = 승인 + 예정미팅 ÷ 2 · 구분: 예상승인단가 80만원 이하 초록 / 100만원 이하 주황 / 100만원 초과 빨강, '
-        '승인·예정미팅이 없으면 접수 유무로 나눕니다.')
+        '예상승인 = 승인 + 예정미팅 ÷ 2 · 구분: 예상승인단가 80만원 이하 초록 / 100만원 이하 파랑 / '
+        '120만원 이하 주황 / 120만원 초과 빨강, 승인·예정미팅이 없으면 접수 유무로 나눕니다.')
 
 
 TOP_N = 5
@@ -93,8 +115,8 @@ def _chart(rk: pd.DataFrame) -> None:
     d['tag'] = d['exp_cost'].map(lambda v: f'{v:,.0f}원')
     order = d['label'].tolist()
 
-    # 값 글자가 잘리지 않게, 또 80만·100만 선이 보이게 가로 범위를 넉넉히 둔다.
-    상한 = max(float(d['exp_cost'].max()) * 1.22, T100 * 1.08)
+    # 값 글자가 잘리지 않게, 또 80만·100만·120만 기준선이 보이게 가로 범위를 넉넉히 둔다.
+    상한 = max(float(d['exp_cost'].max()) * 1.22, T120 * 1.05)
     # paddingInner 로 바 사이를 띄운다. 전에는 바 높이를 고정해 서로 붙어 보였다.
     base = alt.Chart(d).encode(
         y=alt.Y('label:N', sort=order, title=None,
@@ -109,7 +131,7 @@ def _chart(rk: pd.DataFrame) -> None:
                  alt.Tooltip('pend:Q', title='예정미팅')])
     # 값은 바 '안쪽' 오른쪽 끝에 흰색으로. 바 바깥에 두면 배경색 위에 놓여서, 색을
     # 지정하지 않으면 다크 모드에서 검게 나오고 흰색으로 고정하면 밝은 모드에서 사라진다.
-    # 바 안쪽은 늘 초록·주황·빨강이라 흰 글자가 두 모드에서 다 읽힌다.
+    # 바 안쪽은 늘 초록·파랑·주황·빨강이라 흰 글자가 두 모드에서 다 읽힌다.
     #
     # **fill 로 지정해야 한다.** 글자 색에는 fill 이 color 보다 우선해서, 스트림릿 테마가
     # 넣는 fill 이 mark 의 color 를 덮는다. color='white' 만 줬을 때 검게 나온 이유다.
@@ -118,7 +140,8 @@ def _chart(rk: pd.DataFrame) -> None:
                           fill='white', color='white').encode(
         x=alt.X('exp_cost:Q', scale=alt.Scale(domain=[0, 상한], nice=False)), text='tag:N',
         tooltip=alt.value(None))
-    rules = alt.Chart(pd.DataFrame({'v': [T80, T100]})).mark_rule(strokeDash=[4, 4], color=MUTED).encode(x='v:Q')
+    rules = alt.Chart(pd.DataFrame({'v': [T80, T100, T120]})).mark_rule(
+        strokeDash=[4, 4], color=MUTED).encode(x='v:Q')
     st.altair_chart((bars + rules + tags).properties(height=46 * len(d) + 20), width='stretch')
 
 
@@ -140,7 +163,7 @@ def render() -> None:
     c = st.columns(4)
     c[0].metric('라이브 세트', f'{len(rk)}개')
     c[1].metric('80만원 이하', f"{(rk['status'] == '80만 이하').sum()}개")
-    c[2].metric('100만원 이하', f"{rk['status'].isin(['80만 이하', '100만 이하']).sum()}개")
+    c[2].metric('120만원 이하', f"{rk['status'].isin(['80만 이하', '100만 이하', '120만 이하']).sum()}개")
     top = rk.iloc[0] if len(rk) else None
     c[3].metric('1위', _won(top['exp_cost']) + '원' if top is not None and pd.notna(top['exp_cost']) else '-',
                 help=top['set'] if top is not None else None)

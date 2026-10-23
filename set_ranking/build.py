@@ -35,13 +35,19 @@ CACHE = HERE / 'cache'
 WEEKLY = Path.home() / '.claude' / 'skills' / 'weekly-sales-report' / 'weekly_report.py'
 DL = Path.home() / 'Downloads'
 
-# 예상승인단가 3단계 (2026-10-22 지정): 80만 이하 초록 / 100만 이하 주황 / 100만 초과 빨강
-T80, T100 = 800_000, 1_000_000
+# 예상승인단가 4단계 (2026-10-23 지정)
+#   80만 이하 초록 / 100만 이하 파랑 / 120만 이하 주황 / 120만 초과 빨강
+# 화면 쪽 set_ranking/view.py 의 _tier() 와 같은 기준이어야 한다. 한쪽만 고치면
+# 표의 '구분' 과 색이 어긋난다.
+T80, T100, T120 = 800_000, 1_000_000, 1_200_000
 
 
 def tier(exp, exp_cost, recv, spend=1) -> str:
     if exp and exp_cost == exp_cost:
-        return '80만 이하' if exp_cost <= T80 else ('100만 이하' if exp_cost <= T100 else '100만 초과')
+        for 한도, 이름 in ((T80, '80만 이하'), (T100, '100만 이하'), (T120, '120만 이하')):
+            if exp_cost <= 한도:
+                return 이름
+        return '120만 초과'
     if recv:
         return '접수만'
     return '성과 없음' if spend else 'DB만'
