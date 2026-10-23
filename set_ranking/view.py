@@ -145,20 +145,83 @@ def _chart(rk: pd.DataFrame) -> None:
     st.altair_chart((bars + rules + tags).properties(height=46 * len(d) + 20), width='stretch')
 
 
+PERIODS = ['7일', '14일', '30일']
+COMPARE = '기간별 비교'
+
+CMP_CONFIG = {
+    '순위': st.column_config.NumberColumn(width=50, pinned=True),
+    '세트': st.column_config.TextColumn(width=260, pinned=True),
+    **{f'{m} {p}': st.column_config.TextColumn(width='small')
+       for m in ('승인단가', '예상승인단가') for p in PERIODS},
+}
+
+
+def _compare(rk_all: pd.DataFrame) -> None:
+    """기간별 비교 - 30일 순위로 세우고 승인단가·예상승인단가만 7·14·30일로.
+
+    열 순서는 기간별 묶음이다: 7일(승인단가·예상승인단가) → 14일 → 30일.
+    지표별 묶음(승인단가 7·14·30 → 예상승인단가 7·14·30)으로 바꾸면 추이가 옆으로
+    이어져 더 읽기 쉽지만, 지시받은 '3열로 7·14·30' 모양을 따랐다. 바꾸려면 아래
+    루프에서 열을 쌓는 순서만 뒤집으면 된다.
+    """
+    기간별 = {p: rk_all[rk_all['period'] == p].set_index('set') for p in PERIODS}
+    순위 = 기간별['30일']['rank']
+    # 30일에 없는 세트는 뒤로 (이름이 바뀐 직후 등). 보통은 세 기간에 모두 있다.
+    세트들 = sorted(set().union(*(v.index for v in 기간별.values())),
+                  key=lambda s: (순위.get(s, 10_000), s))
+
+    rows, 칠할곳 = [], []
+    for i, s in enumerate(세트들, 1):
+        row, 색 = {'순위': i, '세트': s}, {}
+        for p in PERIODS:
+            v = 기간별[p]
+            있음 = s in v.index
+            appr = v['appr_cost'].get(s) if 있음 else None
+            exp = v['exp_cost'].get(s) if 있음 else None
+            row[f'승인단가 {p}'] = _won(appr)
+            row[f'예상승인단가 {p}'] = _won(exp)
+            색[f'예상승인단가 {p}'] = COLOR.get(_tier(exp, ''), MUTED)
+        rows.append(row)
+        칠할곳.append(색)
+    t = pd.DataFrame(rows)
+
+    def 칠하기(_):
+        out = pd.DataFrame('', index=t.index, columns=t.columns)
+        for i, 색 in enumerate(칠할곳):
+            for 열, c in 색.items():
+                out.iloc[i, t.columns.get_loc(열)] = f'color: {c}; font-weight: 600'
+        return out
+
+    st.dataframe(t.style.apply(칠하기, axis=None), width='stretch', hide_index=True,
+                 column_config=CMP_CONFIG)
+    st.caption('순위는 **30일 기준**입니다. 승인단가 = 지출 ÷ 승인, '
+               '예상승인단가 = 지출 ÷ (승인 + 예정미팅 ÷ 2). '
+               '예상승인단가 색: 80만원 이하 초록 / 100만원 이하 파랑 / 120만원 이하 주황 / '
+               '120만원 초과 빨강. `-` 는 그 기간에 승인(또는 예정미팅)이 없어 단가를 낼 수 없는 경우입니다.')
+
+
 def render() -> None:
     if not (DATA / 'ranking.csv').exists():
         st.warning('세트 순위 데이터가 아직 없습니다. 이 PC 에서 `python set_ranking/build.py` 를 실행해 주세요.')
         return
     rk_all, cr_all, cv, meta = _load((DATA / 'ranking.csv').stat().st_mtime)
 
-    period = st.segmented_control('기간', ['7일', '14일', '30일'], default='7일', key='rk_period') or '7일'
-    rk = rk_all[rk_all['period'] == period].sort_values('rank')
-    cr = cr_all[cr_all['period'] == period]
-    start, end = rk['start'].min(), rk['end'].max()
+    period = st.segmented_control('기간', [*PERIODS, COMPARE],
+                                  default='7일', key='rk_period') or '7일'
 
     cover = ' · '.join(f"{r['media']} {r['data_end'][5:].replace('-', '/')}" for _, r in cv.iterrows() if r['data_end'])
-    st.caption(f"최근 {period} **{start} ~ {meta['end']}** (집계 마지막 날 = 오늘 - 2일) · 데이터 생성 {meta['built_at']}  \n"
-               f"비용 데이터 마지막 날: {cover}")
+    데이터안내 = f"집계 마지막 날 **{meta['end']}** (오늘 - 2일) · 데이터 생성 {meta['built_at']}  \n비용 데이터 마지막 날: {cover}"
+
+    if period == COMPARE:
+        st.caption(데이터안내)
+        _compare(rk_all)
+        return
+
+    rk = rk_all[rk_all['period'] == period].sort_values('rank')
+    cr = cr_all[cr_all['period'] == period]
+    start = rk['start'].min()
+
+    st.caption(f"최근 {period} **{start} ~ {meta['end']}** · " + 데이터안내.split(' · ', 1)[1])
 
     c = st.columns(4)
     c[0].metric('라이브 세트', f'{len(rk)}개')
