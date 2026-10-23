@@ -159,10 +159,8 @@ CMP_CONFIG = {
 def _compare(rk_all: pd.DataFrame) -> None:
     """기간별 비교 - 30일 순위로 세우고 승인단가·예상승인단가만 7·14·30일로.
 
-    열 순서는 기간별 묶음이다: 7일(승인단가·예상승인단가) → 14일 → 30일.
-    지표별 묶음(승인단가 7·14·30 → 예상승인단가 7·14·30)으로 바꾸면 추이가 옆으로
-    이어져 더 읽기 쉽지만, 지시받은 '3열로 7·14·30' 모양을 따랐다. 바꾸려면 아래
-    루프에서 열을 쌓는 순서만 뒤집으면 된다.
+    열 순서는 지표별 묶음이다: 승인단가 7·14·30 → 예상승인단가 7·14·30.
+    같은 지표가 나란히 붙어 추이가 옆으로 이어진다.
     """
     기간별 = {p: rk_all[rk_all['period'] == p].set_index('set') for p in PERIODS}
     순위 = 기간별['30일']['rank']
@@ -170,17 +168,18 @@ def _compare(rk_all: pd.DataFrame) -> None:
     세트들 = sorted(set().union(*(v.index for v in 기간별.values())),
                   key=lambda s: (순위.get(s, 10_000), s))
 
+    METRICS = (('승인단가', 'appr_cost'), ('예상승인단가', 'exp_cost'))
     rows, 칠할곳 = [], []
     for i, s in enumerate(세트들, 1):
         row, 색 = {'순위': i, '세트': s}, {}
-        for p in PERIODS:
-            v = 기간별[p]
-            있음 = s in v.index
-            appr = v['appr_cost'].get(s) if 있음 else None
-            exp = v['exp_cost'].get(s) if 있음 else None
-            row[f'승인단가 {p}'] = _won(appr)
-            row[f'예상승인단가 {p}'] = _won(exp)
-            색[f'예상승인단가 {p}'] = COLOR.get(_tier(exp, ''), MUTED)
+        # 지표 -> 기간 순으로 쌓는다. 열 순서가 곧 이 순서다.
+        for 이름, 열 in METRICS:
+            for p in PERIODS:
+                v = 기간별[p]
+                값 = v[열].get(s) if s in v.index else None
+                row[f'{이름} {p}'] = _won(값)
+                if 열 == 'exp_cost':
+                    색[f'{이름} {p}'] = COLOR.get(_tier(값, ''), MUTED)
         rows.append(row)
         칠할곳.append(색)
     t = pd.DataFrame(rows)
