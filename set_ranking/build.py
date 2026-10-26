@@ -76,7 +76,8 @@ d = g['d']
 MASK = {n: mk for n, _, mk in g['SETS']}
 MEDIA_OF = lambda n: next(k for k in ['메타', '카카오 메인', '카카오 서브', '카카오페이', '토스', '틱톡'] if n.startswith(k))
 
-cov = {'메타': g['m'].day.max()}
+# 메타는 API 로 E 까지 받으므로 지출 없는 날(예: 금요일 미집행)이 끝이어도 데이터 끝은 E 다
+cov = {'메타': E}
 for k, df in g['COVER'].items():
     cov[k] = df['day'].max() if len(df) else pd.NaT
 cov = {k: min(v, E) if pd.notna(v) else pd.NaT for k, v in cov.items()}
