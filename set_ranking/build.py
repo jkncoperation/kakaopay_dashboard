@@ -104,8 +104,9 @@ for N in (7, 14, 30):
         ce = cov.get(MEDIA_OF(name))
         if pd.isna(ce) or not len(sp_ser):
             continue
-        if sp_ser[(sp_ser.index > ce - pd.Timedelta(days=2)) & (sp_ser.index <= ce)].sum() <= 0:
-            continue                                    # 비용 데이터 마지막 이틀에 지출이 없으면 오프
+        # 비용 데이터 마지막 나흘에 지출이 없으면 오프. 이틀로 보면 금·토 쉬는 세트(메타·카카오페이)가 주말에 빠진다
+        if sp_ser[(sp_ser.index > ce - pd.Timedelta(days=4)) & (sp_ser.index <= ce)].sum() <= 0:
+            continue
         win = sp_ser[(sp_ser.index >= S) & (sp_ser.index <= ce)]
         sp = float(win.sum())
         if sp < 1:
