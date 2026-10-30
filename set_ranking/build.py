@@ -196,9 +196,21 @@ for s in {l for _, rules in KSET for _, l in rules}:
     db_cre[s] = d[MASK[s]].utm_content.str.strip().map(_k)
 
 
-# 카카오페이: 시트 소재 ↔ DB 소재 코드 (DB 'kakaopay_ad1-6' = 시트 '채무조정_ad6', 'kakaopay_ad6-12' = '채무조정6_ad12')
+# 카카오페이: 시트 소재 ↔ DB 소재 코드. 지출(시트 소재명)과 DB(utm_content) 양쪽에 같이
+# 걸어서 하나의 이름으로 모은다. 시트 소재명은 규칙에 안 걸려 그대로 통과한다.
+#
+#   DB kakaopay_ad1-6     -> 채무조정_ad6
+#   DB kakaopay_ad6-12    -> 채무조정6_ad12
+#   DB 2nd_kakaopay_ad5   -> 2캠페인_채무조정_ad5     <- 하이픈이 없는 별도 캠페인 계열
+#
+# 2nd 를 빠뜨리면 지출은 '2캠페인_채무조정_ad5', DB 는 '2nd_kakaopay_ad5' 로 갈려서
+# 한 소재가 '지출만' 과 'DB만' 두 줄로 보인다. core/metrics.py 의 PREFIX_FAMILY 와
+# 같은 대응이니 한쪽만 고치지 말 것.
 def kp_key(v) -> str:
     v = str(v).strip()
+    m = re.search(r'(?:^|_)2nd_kakaopay_ad(\d+)$', v, re.I)
+    if m:
+        return f'2캠페인_채무조정_ad{m.group(1)}'
     m = re.search(r'ad(\d+)-(\d+)$', v)
     return f"채무조정{'' if m.group(1) == '1' else m.group(1)}_ad{m.group(2)}" if m else v
 
