@@ -11,20 +11,46 @@ BUCKETS = ["진행불가", "접수", "미팅", "승인"]
 RX_CREATIVE = re.compile(r"^(.*?)(\d*)_ad(\d+)$")
 # kakaopay_ad3-2 → 세트 3, 소재 2
 RX_CONTENT = re.compile(r"kakaopay_ad(\d+)-(\d+)", re.I)
+# 2nd_kakaopay_ad7 → '2nd' 계열, 세트 1, 소재 7 (하이픈 없이 번호만 붙는다)
+RX_CONTENT_FAMILY = re.compile(r"(?:^|_)([a-z0-9]+)_kakaopay_ad(\d+)$", re.I)
+
+# 소재명 앞머리 → utm 계열. 같은 번호라도 캠페인이 다르면 다른 소재다.
+#
+#   채무조정_ad7          <->  kakaopay_ad1-7
+#   2캠페인_채무조정_ad7   <->  2nd_kakaopay_ad7
+#
+# 이게 없으면 둘 다 (1, 7) 로 뭉친다. 2026-10 기준 실제로 '채무조정_adN' 과
+# '2캠페인_채무조정_adN' 이 나란히 있어서, 전환은 지출이 큰 쪽으로만 몰리고
+# 2nd_... 로 들어온 전환은 규칙에 안 맞아 통째로 미매칭이었다(14일간 17건).
+PREFIX_FAMILY = (('2캠페인', '2nd'),)
 
 
-def creative_key(name) -> tuple[int, int] | None:
-    """광고 소재명 → (세트번호, 소재번호). 규칙에 안 맞으면 None."""
+def _family_of_name(prefix: str) -> str:
+    p = prefix.strip()
+    for 앞머리, 계열 in PREFIX_FAMILY:
+        if p.startswith(앞머리):
+            return 계열
+    return ''
+
+
+def creative_key(name) -> tuple[str, int, int] | None:
+    """광고 소재명 → (계열, 세트번호, 소재번호). 규칙에 안 맞으면 None."""
     m = RX_CREATIVE.match(str(name or "").strip())
     if not m:
         return None
-    return (int(m[2]) if m[2] else 1), int(m[3])
+    return _family_of_name(m[1]), (int(m[2]) if m[2] else 1), int(m[3])
 
 
-def content_key(utm_content) -> tuple[int, int] | None:
-    """전환 utm_content → (세트번호, 소재번호)."""
-    m = RX_CONTENT.search(str(utm_content or ""))
-    return (int(m[1]), int(m[2])) if m else None
+def content_key(utm_content) -> tuple[str, int, int] | None:
+    """전환 utm_content → (계열, 세트번호, 소재번호)."""
+    s = str(utm_content or "").strip()
+    m = RX_CONTENT.search(s)
+    if m:
+        return '', int(m[1]), int(m[2])
+    m = RX_CONTENT_FAMILY.search(s)
+    if m and m[1].lower() != 'kakaopay':
+        return m[1].lower(), 1, int(m[2])
+    return None
 
 
 def parse_pairs(text: str) -> dict[str, float]:
@@ -66,7 +92,7 @@ def build_creative_table(ad: pd.DataFrame, db: pd.DataFrame,
                 상태=("상태", "last"), ONOFF=("ON/OFF", "last")))
     g = g[["광고그룹", "소재", "지출", "노출", "클릭", "상태", "ONOFF"]]
     g["key"] = g["소재"].map(creative_key)
-    g["세트번호"] = g["key"].map(lambda k: k[0] if k else None)
+    g["세트번호"] = g["key"].map(lambda k: k[1] if k else None)
 
     # ---- 전환 매칭
     d = db.copy()

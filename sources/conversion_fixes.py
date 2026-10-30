@@ -49,9 +49,15 @@ def load(path: Path | None = None) -> dict[str, dict[str, int]]:
 
 
 def utm_of(creative: str) -> str | None:
-    """'채무조정_ad3' → 'kakaopay_ad1-3' (세트번호 없는 이름은 세트1)"""
+    """'채무조정_ad3' → 'kakaopay_ad1-3' (세트번호 없는 이름은 세트1)
+
+    '2캠페인_채무조정_ad7' 처럼 계열이 다른 소재는 '2nd_kakaopay_ad7' 형태다.
+    """
     k = creative_key(creative)
-    return f"kakaopay_ad{k[0]}-{k[1]}" if k else None
+    if not k:
+        return None
+    계열, 세트, 번호 = k
+    return f"{계열}_kakaopay_ad{번호}" if 계열 else f"kakaopay_ad{세트}-{번호}"
 
 
 def apply(db: pd.DataFrame, fixes: dict[str, dict[str, int]] | None = None,

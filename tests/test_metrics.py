@@ -30,11 +30,13 @@ def db_row(content, 접수="", 승인=""):
 
 # ---------------------------------------------------------------- 키 매칭
 @pytest.mark.parametrize("name,expected", [
-    ("채무조정_ad6", (1, 6)),        # 세트번호 없는 접두어는 세트1
-    ("채무조정2_ad6", (2, 6)),
-    ("채무조정3_ad2", (3, 2)),
-    ("채무조정4_ad1", (4, 1)),
-    ("카카오페이_ad3", (1, 3)),
+    ("채무조정_ad6", ('', 1, 6)),        # 세트번호 없는 접두어는 세트1
+    ("채무조정2_ad6", ('', 2, 6)),
+    ("채무조정3_ad2", ('', 3, 2)),
+    ("채무조정4_ad1", ('', 4, 1)),
+    ("카카오페이_ad3", ('', 1, 3)),
+    ("2캠페인_채무조정_ad7", ('2nd', 1, 7)),   # 다른 캠페인은 다른 계열
+    ("2캠페인_채무조정_ad6", ('2nd', 1, 6)),
     ("카카오페이_ad1_사진변경", None),   # 규칙에 안 맞음
     ("테스트 소재", None),
 ])
@@ -43,10 +45,13 @@ def test_creative_key(name, expected):
 
 
 @pytest.mark.parametrize("content,expected", [
-    ("kakaopay_ad1-6", (1, 6)),
-    ("kakaopay_ad2-5", (2, 5)),
-    ("kakaopay_ad3-2", (3, 2)),
-    ("KAKAOPAY_AD4-11", (4, 11)),
+    ("kakaopay_ad1-6", ('', 1, 6)),
+    ("kakaopay_ad2-5", ('', 2, 5)),
+    ("kakaopay_ad3-2", ('', 3, 2)),
+    ("KAKAOPAY_AD4-11", ('', 4, 11)),
+    ("2nd_kakaopay_ad7", ('2nd', 1, 7)),      # 하이픈 없이 번호만
+    ("2nd_kakaopay_ad1", ('2nd', 1, 1)),
+    ("2ND_KAKAOPAY_AD4", ('2nd', 1, 4)),
     ("naver_ad1-6", None),
     ("", None),
 ])
@@ -59,6 +64,33 @@ def test_creative_and_content_keys_agree():
     assert creative_key("채무조정2_ad6") == content_key("kakaopay_ad2-6")
     assert creative_key("채무조정_ad6") == content_key("kakaopay_ad1-6")
     assert creative_key("채무조정_ad6") != content_key("kakaopay_ad2-6")
+
+
+def test_2캠페인_소재는_원래_소재와_다른_키다():
+    """둘 다 (1, 6) 으로 뭉쳐서, 전환이 지출 큰 쪽으로 몰리고 2nd_ 전환은 통째로 빠졌다."""
+    assert creative_key("2캠페인_채무조정_ad7") == content_key("2nd_kakaopay_ad7")
+    assert creative_key("채무조정_ad7") == content_key("kakaopay_ad1-7")
+    assert creative_key("2캠페인_채무조정_ad7") != creative_key("채무조정_ad7")
+    assert content_key("2nd_kakaopay_ad7") != content_key("kakaopay_ad1-7")
+
+
+def test_2캠페인_전환이_제_소재에_붙는다():
+    """실제 사례: 10/29 '2nd_kakaopay_ad7' 11건이 미매칭이었다."""
+    ad = pd.DataFrame({
+        "날짜": [dt.date(2026, 10, 29)] * 2,
+        "광고그룹": ["메인 캠페인"] * 2,
+        "소재": ["채무조정_ad7", "2캠페인_채무조정_ad7"],
+        "소진비용": [0.0, 304650.0], "노출수": [0.0, 1000.0], "클릭수": [0.0, 10.0],
+        "상태": ["운영중"] * 2, "ON/OFF": ["ON"] * 2})
+    db = pd.DataFrame({
+        "날짜": [dt.date(2026, 10, 29)] * 3,
+        "utm_content": ["2nd_kakaopay_ad7", "2nd_kakaopay_ad7", "kakaopay_ad1-7"],
+        "진행불가": [0, 0, 0], "접수": [1, 0, 1], "미팅": [0, 0, 0], "승인": [0, 0, 0]})
+    g = build_creative_table(ad, db)
+    둘 = dict(zip(g["소재"], g["전환수"]))
+    assert 둘["2캠페인_채무조정_ad7"] == 2
+    assert 둘["채무조정_ad7"] == 1
+    assert unmatched_db(g, db).empty
 
 
 # ---------------------------------------------------------------- 상태 분류
