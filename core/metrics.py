@@ -53,6 +53,22 @@ def content_key(utm_content) -> tuple[str, int, int] | None:
     return None
 
 
+def key_column(series: pd.Series, fn) -> pd.Series:
+    """키 열을 object dtype 으로 고정한다. 키가 튜플이라 반드시 거쳐야 한다.
+
+    pandas 가 문자열(pyarrow) 열에 map 을 걸면 결과가 비었을 때 문자열 dtype 을 그대로
+    유지한다. 그 열에 튜플이 든 집합으로 isin 을 하면 pyarrow 가 **집합 쪽 튜플**을
+    스칼라로 바꾸려다 ArrowTypeError 로 죽는다. 값이 아니라 집합을 변환하다 터지므로
+    행이 0개여도 터진다.
+
+        pd.Series([], dtype='string[pyarrow]').map(content_key).isin({('', 1, 6)})
+        -> ArrowTypeError: Expected bytes, got a 'int' object
+
+    전환이 아직 0건인 시간대에 카카오페이 화면이 통째로 죽던 원인이다.
+    """
+    return pd.Series([fn(v) for v in series], index=series.index, dtype=object)
+
+
 def parse_pairs(text: str) -> dict[str, float]:
     """'채무조정_ad6 12' 여러 줄 → {'채무조정_ad6': 12.0}"""
     out: dict[str, float] = {}
@@ -91,12 +107,12 @@ def build_creative_table(ad: pd.DataFrame, db: pd.DataFrame,
                 노출=("노출수", "sum"), 클릭=("클릭수", "sum"),
                 상태=("상태", "last"), ONOFF=("ON/OFF", "last")))
     g = g[["광고그룹", "소재", "지출", "노출", "클릭", "상태", "ONOFF"]]
-    g["key"] = g["소재"].map(creative_key)
+    g["key"] = key_column(g["소재"], creative_key)
     g["세트번호"] = g["key"].map(lambda k: k[1] if k else None)
 
     # ---- 전환 매칭
     d = db.copy()
-    d["key"] = d["utm_content"].map(content_key)
+    d["key"] = key_column(d["utm_content"], content_key)
     matched = d.dropna(subset=["key"])
     cnt = matched.groupby("key").size().to_dict()
     # 구분은 배타가 아니다(미팅확정은 접수에도 포함). 그래서 라벨로 세지 않고
@@ -142,7 +158,7 @@ def summarize(g: pd.DataFrame) -> dict:
 def unmatched_db(g: pd.DataFrame, db: pd.DataFrame) -> pd.DataFrame:
     """광고 소재 목록에 없는 전환 (utm_content 오타·삭제된 소재 등)."""
     d = db.copy()
-    d["key"] = d["utm_content"].map(content_key)
+    d["key"] = key_column(d["utm_content"], content_key)
     known = set(g["key"].dropna()) if len(g) else set()
     return d[~d["key"].isin(known)].reset_index(drop=True)
 

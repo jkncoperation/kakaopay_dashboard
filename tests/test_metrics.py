@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.metrics import (build_creative_table, content_key, creative_key,  # noqa: E402
-                          parse_pairs, summarize, unmatched_db)
+                          key_column, parse_pairs, summarize, unmatched_db)
 from sources.db_sheet import status_bucket, status_flags  # noqa: E402
 
 D = dt.date(2026, 9, 9)
@@ -327,3 +327,60 @@ def test_승인은_접수_미팅으로_올려주지_않는다():
     """
     f = status_flags("접수완료", "승인 완료")
     assert (f["접수"], f["미팅"], f["승인"]) == (1, 0, 1)
+
+
+# ---------------------------------------------------------------- pyarrow 문자열 열
+def _ad_one():
+    return pd.DataFrame({
+        "날짜": [dt.date(2026, 11, 11)],
+        "광고그룹": ["메인 캠페인"], "소재": ["채무조정_ad6"],
+        "소진비용": [100000.0], "노출수": [1000.0], "클릭수": [10.0],
+        "상태": ["운영중"], "ON/OFF": ["ON"]})
+
+
+def _빈전환(dtype):
+    """전환 0건. utm_content 열의 dtype 을 지정해서 만든다."""
+    return pd.DataFrame({
+        "날짜": pd.Series([], dtype="object"),
+        "utm_content": pd.Series([], dtype=dtype),
+        "진행불가": pd.Series([], dtype="int64"), "접수": pd.Series([], dtype="int64"),
+        "미팅": pd.Series([], dtype="int64"), "승인": pd.Series([], dtype="int64")})
+
+
+@pytest.mark.parametrize("dtype", ["object", "string", "string[pyarrow]"])
+def test_전환이_0건이어도_죽지_않는다(dtype):
+    """실제 사고: 전환 0건인 시간대에 카카오페이 화면이 통째로 죽었다.
+
+    pandas 가 문자열 열에 map 을 걸면 결과가 비었을 때 문자열 dtype 을 유지한다.
+    그 열에 튜플이 든 집합으로 isin 을 하면 pyarrow 가 집합 쪽 튜플을 스칼라로
+    바꾸려다 ArrowTypeError 로 죽는다 - 행이 0개여도 터진다.
+    """
+    ad, db = _ad_one(), _빈전환(dtype)
+    g = build_creative_table(ad, db)          # 여기서 키 열이 만들어진다
+    assert int(g["전환수"].sum()) == 0
+    um = unmatched_db(g, db)                  # 터지던 자리
+    assert um.empty
+
+
+@pytest.mark.parametrize("dtype", ["object", "string", "string[pyarrow]"])
+def test_키_열은_언제나_object_dtype(dtype):
+    """키가 튜플이라 object 여야 한다. 문자열 dtype 이면 isin 에서 죽는다."""
+    빈 = pd.Series([], dtype=dtype)
+    assert key_column(빈, content_key).dtype == object
+    찬 = pd.Series(["kakaopay_ad1-6", "이상한값"], dtype=dtype)
+    키 = key_column(찬, content_key)
+    assert 키.dtype == object
+    assert list(키) == [('', 1, 6), None]
+    키.isin({('', 1, 6)})                     # 예외가 나지 않아야 한다
+
+
+@pytest.mark.parametrize("dtype", ["object", "string", "string[pyarrow]"])
+def test_전환이_있어도_dtype_에_상관없이_붙는다(dtype):
+    ad = _ad_one()
+    db = pd.DataFrame({
+        "날짜": [dt.date(2026, 11, 11)] * 2,
+        "utm_content": pd.Series(["kakaopay_ad1-6", "알수없는값"], dtype=dtype),
+        "진행불가": [0, 0], "접수": [1, 1], "미팅": [0, 0], "승인": [0, 0]})
+    g = build_creative_table(ad, db)
+    assert int(g["전환수"].sum()) == 1
+    assert len(unmatched_db(g, db)) == 1      # '알수없는값' 하나만 미매칭
