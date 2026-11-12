@@ -88,6 +88,15 @@ cov = {k: min(v, E) if pd.notna(v) else pd.NaT for k, v in cov.items()}
 OFF_SETS = {
     '토스 이미지 소재 세트',                # 2026-10-23 오프
     '토스 adset1 / 간소화 랜딩',            # 2026-10-23 오프
+    # 2026-11-12 사용자 확인: 라이브는 메타 테스트 영상·이미지2 / 토스 논타겟 / 카카오 메인 납입금 절감·디스플레이 2개 /
+    # 카카오 서브 메인 세트·1105 테스트 / 카카오페이. 나머지는 오프.
+    '메타 노말_본세트', '메타 고성과 카피 간소화 랜딩 세트', '메타 고성과 카피 간소화 인스턴트 세트', '메타 신규 소재_테스트 세트',
+    '메타 고성과 카피 소재 세트(복합전환)', '메타 테스트 신규 소재 세트',
+    '카카오 메인 연체해결 세트', '카카오 서브 납입금 절감 세트 (A)',
+    '틱톡 대화형 영상 소재',
+    '토스 잠재양식 신규 세트 - 대환, 채무통합', '토스 잠재양식 신규 세트2 - 채무조정',
+    '토스 adset2 / 간소화 랜딩', '토스 adset3 / 간소화 랜딩', '토스 adset4 / 간소화 랜딩',
+    '토스 simplified / 간소화 랜딩 (통합 포함)', '토스 simplified2 / 간소화 랜딩', '토스 simplified3 / 간소화 랜딩',
 }
 # 이름을 바꾼 날부터 새 세트로 본다: {세트: (새로 보는 날, 화면에 쓸 이름)}.
 # 카카오 서브 '테스트 소재 세트 / 납입금 절감' 은 2026-10-21 에 '테스트 소재 세트 A' 로 바뀌었다
@@ -145,7 +154,9 @@ META_SET = lambda a: ('메타 노말_본세트' if a == '노말_본세트' else 
                       else '메타 고성과 카피 간소화 인스턴트 세트' if '카카오_v13' in a
                       else '메타 신규 소재_테스트 세트' if a == '신규 소재_테스트 세트'
                       # 2026-10-26~ 새 캠페인 '1026 테스트 소재 캠페인 / 캠페인2' 세트들
-                      else '메타 테스트 소재 세트' if a == '테스트 소재 세트'
+                      # 2026-11-12 같은 광고세트가 '테스트 영상 소재 세트 / 일 10' 으로 이름 변경 (API 는 현재 이름)
+                      else '메타 테스트 영상 소재 세트' if a == '테스트 소재 세트' or a.startswith('테스트 영상 소재 세트')
+                      else '메타 테스트 이미지 소재 세트2' if a.startswith('테스트 이미지 소재 세트2')
                       else '메타 고성과 카피 소재 세트(복합전환)' if a == '고성과 카피 소재 세트(복합전환)'
                       else '메타 테스트 신규 소재 세트' if a == '테스트 신규 소재 세트' else None)
 if len(mi):
@@ -160,9 +171,13 @@ if len(mi):
 sys.path.insert(0, str(WEEKLY.parent))
 import kakao_moment as km  # noqa: E402
 
-KSET = [(802036, [('연체 해결', '카카오 메인 연체해결 세트'), ('납입금 절감', '카카오 메인 납입금 절감 세트')]),
+# 2026-11-12 새 세트는 광고그룹 ID 로 고정 (주간보고서 KGRP 와 같은 ID). ID 규칙을 앞에 둬야 이름 규칙보다 먼저 걸린다
+# ('[비즈니스 폼 +] 테스트 소재 세트 / 연체 / …' 는 이름만 보면 서브 B 규칙에도 걸린다).
+KGRP_ID = {str(gid): n for n, _, gid, _ in g['KGRP']}
+KSET = [(802036, [('#4701577', '카카오 메인 디스플레이 이미지 세트 / 메인'), ('#4700354', '카카오 메인 디스플레이 이미지 세트 / 테스트'),
+                  ('연체 해결', '카카오 메인 연체해결 세트'), ('납입금 절감', '카카오 메인 납입금 절감 세트')]),
         # 2026-10-22 광고그룹 이름 변경: 납입금 절감 → 테스트 소재 세트 A, 연체 해결 → B
-        (928346, [('테스트 소재 세트 A', '카카오 서브 납입금 절감 세트 (A)'), ('테스트 소재 세트 / 납입금', '카카오 서브 납입금 절감 세트 (A)'),
+        (928346, [('#4702180', '카카오 서브 테스트 소재 세트 / 연체 (1105)'), ('테스트 소재 세트 A', '카카오 서브 납입금 절감 세트 (A)'), ('테스트 소재 세트 / 납입금', '카카오 서브 납입금 절감 세트 (A)'),
                   ('테스트 소재 세트 B', '카카오 서브 연체해결 세트 (B)'), ('테스트 소재 세트 / 연체', '카카오 서브 연체해결 세트 (B)'),
                   # 2026-10-29~ B 이름 변경
                   ('서브 메인 세트 / 연체', '카카오 서브 연체해결 세트 (B)')])]
@@ -175,7 +190,7 @@ else:
     for acct, rules in KSET:
         for c in km._get('/campaigns', acct, tok).get('content') or []:
             for grp in km._get('/adGroups', acct, tok, campaignId=c['id']).get('content') or []:
-                lab = next((l for k, l in rules if k in grp['name']), None)
+                lab = next((l for k, l in rules if (k == f"#{grp['id']}" if k.startswith('#') else k in grp['name'])), None)
                 if not lab:
                     continue
                 nm = {str(x['id']): x['name'] for x in km._get('/creatives', acct, tok, adGroupId=grp['id']).get('content') or []}
@@ -200,6 +215,12 @@ def kakao_cre(name: str) -> str:
 
 sp_rows += [(r.set, kakao_cre(kname.get(r.cid, r.cid)), r.day, r.cost) for r in kk.itertuples()]
 for s in {l for _, rules in KSET for _, l in rules}:
+    if s not in MASK:
+        continue
+    if s in KGRP_ID.values():          # 광고그룹 ID 세트: DB 소재는 utm_term(소재 ID) → 소재 이름
+        db_cre[s] = d[MASK[s]].utm_term.astype(str).str.strip().map(lambda c: kakao_cre(kname.get(c, c)))
+        continue
+
     def _k(v):
         m = re.match(r'미등록 소재 ID: (\d+)', v)           # 비즈폼에 등록 전인 새 소재
         return kakao_cre(kname.get(m.group(1), v) if m else v)
